@@ -332,8 +332,13 @@ export function isValueCompatible(value: unknown, typeOrOptions: string | unknow
 
 export function resolveSource(
   workflow: Workflow,
-  linkId: number
+  linkId: number,
+  visitedLinkIds: Set<number> = new Set(),
+  promptKeyMap?: Map<number, string>
 ): { nodeId: number; slotIndex: number } | null {
+  if (visitedLinkIds.has(linkId)) return null;
+  visitedLinkIds.add(linkId);
+
   const link = workflow.links.find((l) => l[0] === linkId);
   if (!link) return null;
 
@@ -342,6 +347,24 @@ export function resolveSource(
   const sourceNode = workflow.nodes.find((n) => n.id === sourceNodeId);
 
   if (!sourceNode) return null;
+
+  if (sourceNode.type === 'GetNode') {
+    const getterName = getKJSetGetNodeName(sourceNode);
+    if (!getterName) return null;
+
+    const setterNode = findKJSetterNode(workflow, sourceNode, getterName, promptKeyMap);
+    const setterInputLink = setterNode?.inputs?.[0]?.link;
+    if (setterInputLink == null) return null;
+
+    return resolveSource(workflow, setterInputLink, visitedLinkIds, promptKeyMap);
+  }
+
+  if (sourceNode.type === 'SetNode') {
+    const setterInputLink = sourceNode.inputs?.[0]?.link;
+    if (setterInputLink == null) return null;
+
+    return resolveSource(workflow, setterInputLink, visitedLinkIds, promptKeyMap);
+  }
 
   if (sourceNode.mode === 4 || sourceNode.type === 'Reroute') {
     const outputDef = sourceNode.outputs[sourceSlotIndex];
@@ -355,12 +378,49 @@ export function resolveSource(
     });
 
     if (matchingInput?.link != null) {
-      return resolveSource(workflow, matchingInput.link);
+      return resolveSource(workflow, matchingInput.link, visitedLinkIds, promptKeyMap);
     }
     return null;
   }
 
   return { nodeId: sourceNodeId, slotIndex: sourceSlotIndex };
+}
+
+function getKJSetGetNodeName(node: WorkflowNode): string | null {
+  const values = node.widgets_values;
+  if (Array.isArray(values)) {
+    const value = values[0];
+    return typeof value === 'string' && value ? value : null;
+  }
+  if (isRecord(values)) {
+    const value = values[0] ?? values.value ?? values.name;
+    return typeof value === 'string' && value ? value : null;
+  }
+  return null;
+}
+
+function getPromptScope(promptKey: string | undefined): string | null {
+  if (!promptKey) return null;
+  const scopeEnd = promptKey.lastIndexOf(':');
+  return scopeEnd === -1 ? '' : promptKey.slice(0, scopeEnd);
+}
+
+function findKJSetterNode(
+  workflow: Workflow,
+  getterNode: WorkflowNode,
+  getterName: string,
+  promptKeyMap?: Map<number, string>
+): WorkflowNode | undefined {
+  const candidates = workflow.nodes.filter(
+    (node) => node.type === 'SetNode' && getKJSetGetNodeName(node) === getterName
+  );
+
+  const getterScope = getPromptScope(promptKeyMap?.get(getterNode.id));
+  if (getterScope === null) return candidates[0];
+
+  return candidates.find(
+    (node) => getPromptScope(promptKeyMap?.get(node.id)) === getterScope
+  );
 }
 
 export function buildWorkflowPromptInputs(
@@ -377,7 +437,7 @@ export function buildWorkflowPromptInputs(
 
   for (const input of node.inputs) {
     if (input.link != null) {
-      const resolved = resolveSource(workflow, input.link);
+      const resolved = resolveSource(workflow, input.link, new Set(), promptKeyMap);
       if (resolved) {
         if (allowedNodeIds.has(resolved.nodeId)) {
           const nodeKey = promptKeyMap?.get(resolved.nodeId) ?? String(resolved.nodeId);
