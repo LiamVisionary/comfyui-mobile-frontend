@@ -497,7 +497,14 @@ export function buildWorkflowPromptInputs(
           indexToUse = widgetCursor;
         }
 
-        if (name === 'seed' && seedOverrides?.[node.id] !== undefined && !(name in inputs)) {
+        // Apply the seed override for either of the two conventional seed input
+        // names — stock KSampler uses 'seed', but several custom nodes (e.g.
+        // KSampler Adv (Efficient), KSampler SDXL (Eff.)) use 'noise_seed' and
+        // declare it as INT with min=0, so sending -1 (the special-mode value
+        // stored in the widget) would be rejected by the server.
+        if ((name === 'seed' || name === 'noise_seed')
+            && seedOverrides?.[node.id] !== undefined
+            && !(name in inputs)) {
           inputs[name] = seedOverrides[node.id];
         } else if (indexToUse !== undefined && !isConnected && !(name in inputs)) {
           const rawValue = getWidgetValue(node, name, indexToUse);
@@ -525,10 +532,20 @@ export function buildWorkflowPromptInputs(
         }
 
         if (String(typeOrOptions) === 'INT' && (name === 'seed' || name === 'noise_seed')) {
-          if (indexToUse !== undefined) {
-            widgetCursor = Math.max(widgetCursor, indexToUse + 2);
-          } else {
-            widgetCursor = Math.max(widgetCursor, widgetCursor + 1);
+          // Skip past ComfyUI's auto control_after_generate widget only when a
+          // string is actually present at that slot. Efficient KSampler family
+          // nodes strip it on the JS side, so the saved widgets_values is one
+          // slot shorter than the declared widget order.
+          const seedSlot = indexToUse ?? (widgetCursor - 1);
+          const nextValue = Array.isArray(node.widgets_values)
+            ? node.widgets_values[seedSlot + 1]
+            : undefined;
+          if (typeof nextValue === 'string' && nextValue.length > 0) {
+            if (indexToUse !== undefined) {
+              widgetCursor = Math.max(widgetCursor, indexToUse + 2);
+            } else {
+              widgetCursor = Math.max(widgetCursor, widgetCursor + 1);
+            }
           }
         }
       }

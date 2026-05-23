@@ -1041,6 +1041,7 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
        />
        {outputsWorkflowConfirmFile && createPortal(
          <Dialog
+           fullscreen={viewerOpen}
            onClose={handleOutputsWorkflowCancel}
            title="Unsaved changes"
            description="Are you sure you want to load this workflow? You have unsaved changes."

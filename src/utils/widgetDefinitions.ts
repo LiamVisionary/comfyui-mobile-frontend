@@ -307,7 +307,18 @@ function collectWidgetDefinitions(
       if (isWidgetType) {
         widgetIndex += 1;
         if (String(typeOrOptions) === 'INT' && (name === 'seed' || name === 'noise_seed')) {
-          widgetIndex += 1;
+          // ComfyUI auto-adds a control_after_generate string widget after
+          // every INT seed input, but some custom nodes (Efficient KSampler
+          // family) strip it on the JS side, so widgets_values is shorter
+          // than the declared widget order. Only skip past the slot when it
+          // actually holds a string — otherwise every later widget reads
+          // from the wrong array index.
+          const nextValue = Array.isArray(node.widgets_values)
+            ? node.widgets_values[widgetIndex]
+            : undefined;
+          if (typeof nextValue === 'string' && nextValue.length > 0) {
+            widgetIndex += 1;
+          }
         }
       }
     };

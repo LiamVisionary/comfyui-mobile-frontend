@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.2 - 2026-05-23
+
+### Fixed
+
+- "Unsaved changes" confirmation dialog (triggered from the outputs panel viewer's load-workflow button) no longer leaves an unstyled gap at the top where the hidden top bar would be
+- Seed overrides for `noise_seed` inputs (used by Efficient KSampler Adv, KSampler SDXL Eff., etc.) now resolve correctly at queue time. Previously the special-mode value `-1` was sent to the server, which rejected it due to `min: 0` (#57)
+- Reading widget values for nodes whose JS strips the auto `control_after_generate` widget (Efficient KSampler family) no longer reads later inputs from the wrong array indices. This eliminates spurious "Missing on ComfyUI server" badges on sampler_name, scheduler, preview_method, and similar inputs
+
 ## 2.6.1 - 2026-05-18
 
 ### Added

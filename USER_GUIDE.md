@@ -10,7 +10,10 @@ This guide walks through every feature in the mobile frontend as of `v2.0.0`
   - [How do I use an output image in my current workflow?](#how-do-i-use-an-output-image-in-my-current-workflow)
   - [How do I load the workflow of one of my output images?](#how-do-i-load-the-workflow-of-one-of-my-output-images)
   - [How do I run my workflow multiple times?](#how-do-i-run-my-workflow-multiple-times)
+  - [How do I enable infinite generation mode?](#how-do-i-enable-infinite-generation-mode)
   - [How do I watch outputs as they are generated?](#how-do-i-watch-outputs-as-they-are-generated)
+  - [How do I favorite an output?](#how-do-i-favorite-an-output)
+  - [How do I see my favorites?](#how-do-i-see-my-favorites)
   - [How do I find a specific node in my workflow?](#how-do-i-find-a-specific-node-in-my-workflow)
   - [How do I quickly edit a widget I change often?](#how-do-i-quickly-edit-a-widget-i-change-often)
   - [How do I use LoRA Manager with this frontend?](#how-do-i-use-lora-manager-with-this-frontend)
@@ -102,10 +105,25 @@ Click on the image you would like to load the workflow for in your outputs list,
 
 Use the run count buttons (minus/plus) in the [Bottom Bar](#bottom-bar) to set how many runs to enqueue, then tap the **Run** button. Each run is queued separately on the server. You can monitor all pending and running items on the [Queue Page](#queue-page).
 
+<a id="how-do-i-enable-infinite-generation-mode"></a>
+### How do I enable infinite generation mode?
+
+First turn the feature on under [Main Menu](#main-menu) → **Server** → **Preferences** → toggle **Enable infinite mode**. With the preference on, an ∞ button appears beside the Run button in the [Bottom Bar](#bottom-bar). Tap it to enable infinite generation. Now when you tap **Run**, each finished run automatically queues the next one. While running, the Run button is replaced by a red **Stop** button (which cancels the current run and disables infinite mode) and an amber **Skip** button (which cancels the current run but keeps looping into the next iteration).
+
 <a id="how-do-i-watch-outputs-as-they-are-generated"></a>
 ### How do I watch outputs as they are generated?
 
 Tap the queue/follow button in the [Bottom Bar](#bottom-bar) to open the [Image Viewer](#image-viewer) in [Follow Queue Mode](#follow-queue-mode). The viewer will automatically jump to newly generated media (saved outputs and preview/temp images) as each run completes. Tap the button again to pause or resume following.
+
+<a id="how-do-i-favorite-an-output"></a>
+### How do I favorite an output?
+
+Open any saved output image in the [Image Viewer](#image-viewer) — from the [Outputs Page](#outputs-page), the [Queue Page](#queue-page), or [Follow Queue Mode](#follow-queue-mode) — and tap the heart button next to the load-workflow and use-in-workflow buttons. The heart fills in solid red to indicate the image is favorited. Tap again to unfavorite. You can also favorite a file from the [Outputs Page](#outputs-page) by opening its `...` menu and tapping **Favorite**. Favorited files show a small red heart indicator on their card.
+
+<a id="how-do-i-see-my-favorites"></a>
+### How do I see my favorites?
+
+Go to the [Outputs Page](#outputs-page), open the [filter and sort](#filtering-and-sorting) modal from the `...` menu, and toggle **Favorites only**. The grid will then show only your favorited files. Toggle it off to return to all files. See [Favorites](#favorites) for more.
 
 <a id="how-do-i-find-a-specific-node-in-my-workflow"></a>
 ### How do I find a specific node in my workflow?
@@ -154,7 +172,7 @@ On the [Outputs Page](#outputs-page), you can create new folders from the bulk s
 <a id="how-do-i-switch-between-my-outputs-and-input-images"></a>
 ### How do I switch between my outputs and input images?
 
-On the [Outputs Page](#outputs-page), tap the `...` menu in the top-right and select the option to switch between **Outputs** and **Inputs**. Outputs shows your generated images and videos, while Inputs shows uploaded assets (including duplicates of any images the "User in Workflow" action was triggered on). The [Top Bar](#top-bar) title updates to reflect which source is active. See [Source Switching](#source-switching).
+On the [Outputs Page](#outputs-page), tap the `...` menu in the top-right and select the option to switch between **Outputs** and **Inputs**. Outputs shows your generated images and videos, while Inputs shows uploaded assets (including duplicates of any images the "Use in Workflow" action was triggered on). The [Top Bar](#top-bar) title updates to reflect which source is active. See [Source Switching](#source-switching).
 
 <a id="how-do-i-navigate-between-pages"></a>
 ### How do I navigate between pages?
@@ -502,7 +520,8 @@ The outputs page is a file browser for your generated outputs and input assets. 
 ### Favorites
 
 - Mark files as favorites for quick access.
-- Favorite files show a star indicator.
+- Favorite files show a solid red heart indicator.
+- Favorite or unfavorite from the file's `...` context menu, from the heart button in the [Image Viewer](#image-viewer), or from the selection actions when in [Selection Mode](#select-mode).
 - Use the "favorites only" filter to view just your favorited files.
 - Favorites persist across sessions.
 

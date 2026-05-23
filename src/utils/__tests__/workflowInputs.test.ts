@@ -564,6 +564,239 @@ describe('resolveSource', () => {
   });
 });
 
+describe('seed override application in buildWorkflowPromptInputs', () => {
+  it("replaces a 'seed' INT widget value with the override (stock KSampler)", () => {
+    const node = makeNode(1, 'KSampler', {
+      widgets_values: [-1],
+    });
+    const wf: Workflow = {
+      last_node_id: 1,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const nodeTypes: NodeTypes = {
+      KSampler: {
+        input: {
+          required: {
+            seed: ['INT', { default: 0, min: 0, max: 0xffffffffffffffff }],
+          },
+        },
+        input_order: { required: ['seed'], optional: [] },
+        output: [],
+        output_name: [],
+        name: 'KSampler',
+        display_name: 'KSampler',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      wf, nodeTypes, node, 'KSampler', new Set([1]), null, { 1: 12345 },
+    );
+
+    expect(inputs.seed).toBe(12345);
+  });
+
+  it("replaces a 'noise_seed' INT widget value with the override (Efficient KSampler Adv)", () => {
+    // Regression for issue #57: Efficient KSampler Adv names its seed input
+    // 'noise_seed' with min=0. When the user picks a special seed mode the
+    // widget holds -1, and the override path must rewrite inputs.noise_seed
+    // rather than passing -1 through to the server.
+    const node = makeNode(1, 'KSampler Adv (Efficient)', {
+      widgets_values: ['enable', -1],
+    });
+    const wf: Workflow = {
+      last_node_id: 1,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const nodeTypes: NodeTypes = {
+      'KSampler Adv (Efficient)': {
+        input: {
+          required: {
+            add_noise: [['enable', 'disable'], {}],
+            noise_seed: ['INT', { default: 0, min: 0, max: 0xffffffffffffffff }],
+          },
+        },
+        input_order: { required: ['add_noise', 'noise_seed'], optional: [] },
+        output: [],
+        output_name: [],
+        name: 'KSampler Adv (Efficient)',
+        display_name: 'KSampler Adv (Efficient)',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      wf, nodeTypes, node, 'KSampler Adv (Efficient)', new Set([1]), null, { 1: 67890 },
+    );
+
+    expect(inputs.noise_seed).toBe(67890);
+    expect(inputs.add_noise).toBe('enable');
+  });
+
+  it("reads later widgets at the correct index when control_after_generate is stripped (Efficient KSampler Adv)", () => {
+    // Regression for the off-by-one bug: Efficient Nodes removes the auto
+    // control_after_generate widget on the JS side, so widgets_values is one
+    // slot shorter than the declared widget order. Inputs after noise_seed
+    // (sampler_name, scheduler, preview_method, etc.) should still read from
+    // the right positions instead of being shifted by one.
+    const node = makeNode(1, 'KSampler Adv (Efficient)', {
+      widgets_values: [
+        'enable',     // add_noise
+        42,           // noise_seed
+        // (no control_after_generate slot — stripped by Efficient Nodes)
+        20,           // steps
+        'euler',      // sampler_name
+        'karras',     // scheduler
+        'auto',       // preview_method
+      ],
+    });
+    const wf: Workflow = {
+      last_node_id: 1,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const nodeTypes: NodeTypes = {
+      'KSampler Adv (Efficient)': {
+        input: {
+          required: {
+            add_noise: [['enable', 'disable'], {}],
+            noise_seed: ['INT', { default: 0, min: 0, max: 0xffffffffffffffff }],
+            steps: ['INT', { default: 20, min: 1, max: 10000 }],
+            sampler_name: [['euler', 'dpmpp_2m'], {}],
+            scheduler: [['karras', 'normal'], {}],
+            preview_method: [['auto', 'latent2rgb', 'taesd', 'none'], {}],
+          },
+        },
+        input_order: {
+          required: ['add_noise', 'noise_seed', 'steps', 'sampler_name', 'scheduler', 'preview_method'],
+          optional: [],
+        },
+        output: [],
+        output_name: [],
+        name: 'KSampler Adv (Efficient)',
+        display_name: 'KSampler Adv (Efficient)',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      wf, nodeTypes, node, 'KSampler Adv (Efficient)', new Set([1]), null,
+    );
+
+    expect(inputs.noise_seed).toBe(42);
+    expect(inputs.steps).toBe(20);
+    expect(inputs.sampler_name).toBe('euler');
+    expect(inputs.scheduler).toBe('karras');
+    expect(inputs.preview_method).toBe('auto');
+  });
+
+  it("still skips the control_after_generate slot when it is present (stock KSampler)", () => {
+    const node = makeNode(1, 'KSampler', {
+      widgets_values: [
+        42,           // seed
+        'fixed',      // control_after_generate (stock ComfyUI auto-widget)
+        20,           // steps
+        'euler',      // sampler_name
+      ],
+    });
+    const wf: Workflow = {
+      last_node_id: 1,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const nodeTypes: NodeTypes = {
+      KSampler: {
+        input: {
+          required: {
+            seed: ['INT', { default: 0, min: 0, max: 0xffffffffffffffff }],
+            steps: ['INT', { default: 20, min: 1, max: 10000 }],
+            sampler_name: [['euler', 'dpmpp_2m'], {}],
+          },
+        },
+        input_order: { required: ['seed', 'steps', 'sampler_name'], optional: [] },
+        output: [],
+        output_name: [],
+        name: 'KSampler',
+        display_name: 'KSampler',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      wf, nodeTypes, node, 'KSampler', new Set([1]), null,
+    );
+
+    expect(inputs.seed).toBe(42);
+    expect(inputs.steps).toBe(20);
+    expect(inputs.sampler_name).toBe('euler');
+  });
+
+  it("leaves the seed alone when no override is present", () => {
+    const node = makeNode(1, 'KSampler Adv (Efficient)', {
+      widgets_values: ['enable', 42],
+    });
+    const wf: Workflow = {
+      last_node_id: 1,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const nodeTypes: NodeTypes = {
+      'KSampler Adv (Efficient)': {
+        input: {
+          required: {
+            add_noise: [['enable', 'disable'], {}],
+            noise_seed: ['INT', { default: 0, min: 0, max: 0xffffffffffffffff }],
+          },
+        },
+        input_order: { required: ['add_noise', 'noise_seed'], optional: [] },
+        output: [],
+        output_name: [],
+        name: 'KSampler Adv (Efficient)',
+        display_name: 'KSampler Adv (Efficient)',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      wf, nodeTypes, node, 'KSampler Adv (Efficient)', new Set([1]), null, undefined,
+    );
+
+    expect(inputs.noise_seed).toBe(42);
+  });
+});
+
 describe('resolveComboOption', () => {
   it('matches extensionless and base-path values to combo options', () => {
     const options = ['foo.safetensors', 'bar.safetensors'];
