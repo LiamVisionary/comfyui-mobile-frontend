@@ -2,7 +2,6 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/mobile/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -27,10 +26,71 @@
       })();
     </script>
     <title>ComfyUI Mobile</title>
-    <script type="module" crossorigin src="/mobile/assets/index-Ca-7VoDt.js"></script>
-    <link rel="stylesheet" crossorigin href="/mobile/assets/index-B6uwR18P.css">
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #05070d;
+        color: #f6f7fb;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      #mobile-boot-screen {
+        min-height: 100vh;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        box-sizing: border-box;
+        background:
+          radial-gradient(circle at 50% 18%, rgba(88, 166, 255, 0.18), transparent 34%),
+          linear-gradient(180deg, #0b1020 0%, #05070d 100%);
+      }
+      .mobile-boot-card {
+        width: min(360px, 100%);
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 28px;
+        padding: 26px;
+        background: rgba(10, 13, 26, .86);
+        box-shadow: 0 26px 90px rgba(0,0,0,.42);
+        text-align: center;
+      }
+      .mobile-boot-logo {
+        width: 52px;
+        height: 52px;
+        margin: 0 auto 16px;
+        border-radius: 18px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(135deg, #7c3aed, #06b6d4);
+        font-size: 28px;
+      }
+      .mobile-boot-card h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -.03em; }
+      .mobile-boot-card p { margin: 0; color: rgba(246,247,251,.72); line-height: 1.45; }
+      .mobile-boot-spinner {
+        width: 28px;
+        height: 28px;
+        margin: 20px auto 0;
+        border-radius: 999px;
+        border: 3px solid rgba(255,255,255,.16);
+        border-top-color: #67e8f9;
+        animation: mobile-boot-spin .8s linear infinite;
+      }
+      @keyframes mobile-boot-spin { to { transform: rotate(360deg); } }
+    </style>
+    <script type="module" crossorigin src="/mobile/assets/index-CDPzFzzy.js"></script>
+    <link rel="stylesheet" crossorigin href="/mobile/assets/index-CeNTn7BE.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="mobile-boot-screen" aria-live="polite">
+        <div class="mobile-boot-card">
+          <div class="mobile-boot-logo">⚡</div>
+          <h1>Opening ComfyUI Mobile</h1>
+          <p>Loading the workflow controls. This should only take a moment.</p>
+          <div class="mobile-boot-spinner" aria-hidden="true"></div>
+        </div>
+      </div>
+    </div>
   </body>
 </html>

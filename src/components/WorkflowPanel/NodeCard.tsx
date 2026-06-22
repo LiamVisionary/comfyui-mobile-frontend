@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkflowInput, WorkflowNode } from '@/api/types';
-import { useWorkflowStore, getWidgetDefinitions, getInputWidgetDefinitions, getWidgetIndexForInput, findSeedWidgetIndex, resolveSubgraphPlaceholderWidgetDefs, resolveSubgraphPlaceholderInputWidgetDefs, resolveSubgraphProxyWidgetDefs, resolveSubgraphProxyInputWidgetDefs } from '@/hooks/useWorkflow';
+import { useWorkflowStore, getWidgetDefinitions, getInputWidgetDefinitions, getWidgetIndexForInput, findSeedWidgetIndex, resolveSubgraphPlaceholderWidgetDefs, resolveSubgraphPlaceholderInputWidgetDefs, resolveSubgraphProxyWidgetDefs, resolveSubgraphProxyInputWidgetDefs, getWorkflowLoraMode, isLoraModeNode, type LoraExecutionMode } from '@/hooks/useWorkflow';
 import type { ProxyWidgetRoute } from '@/utils/widgetDefinitions';
 import { isSubgraphPlaceholder } from '@/utils/canonicalWorkflowOps';
 import { isLoraManagerNodeType } from '@/utils/loraManager';
@@ -119,6 +119,9 @@ export const NodeCard = memo(function NodeCard({
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showFastGroupConfig, setShowFastGroupConfig] = useState(false);
   const deleteNode = useWorkflowStore((s) => s.deleteNode);
+  const duplicateNodeAfter = useWorkflowStore((s) => s.duplicateNodeAfter);
+  const insertLoraNodeDynamic = useWorkflowStore((s) => s.insertLoraNodeDynamic);
+  const setLoraExecutionMode = useWorkflowStore((s) => s.setLoraExecutionMode);
 
   useEffect(() => {
     const handleShowLabel = (event: Event) => {
@@ -176,6 +179,8 @@ export const NodeCard = memo(function NodeCard({
   const displayName: string = nodeTitle || placeholderSubgraphName || typeDef?.display_name || node.type;
   const isKSampler = node.type === 'KSampler';
   const isLoraManagerNode = isLoraManagerNodeType(node.type);
+  const isLoraExecutionNode = isLoraModeNode(node.type);
+  const loraExecutionMode = useMemo(() => getWorkflowLoraMode(workflow), [workflow]);
   const isFastGroupsBypasser = /fast\s+groups/i.test(node.type) && /\(rgthree\)/i.test(node.type);
   const isBypassed = node.mode === 4;
   const isCollapsed = Boolean(collapsedItems[nodeHierarchicalKey]);
@@ -188,13 +193,17 @@ export const NodeCard = memo(function NodeCard({
 
   // Unfiltered widget defs — used for proxy route extraction before seed filtering.
   const allResolvedWidgets = useMemo(() => {
+    // Collapsed cards should stay cheap. Previously we still resolved and rendered
+    // every widget/connection inside collapsed nodes; on phones this made taps feel
+    // delayed because even a compact workflow kept a large hidden DOM alive.
+    if (isCollapsed) return [];
     if (isPlaceholder && workflow) {
       const slotPromoted = resolveSubgraphPlaceholderWidgetDefs(node, workflow, nodeTypes);
       const proxyPromoted = resolveSubgraphProxyWidgetDefs(node, workflow, nodeTypes);
       return [...slotPromoted, ...proxyPromoted];
     }
     return getWidgetDefinitions(nodeTypes, node);
-  }, [nodeTypes, node, isPlaceholder, workflow]);
+  }, [nodeTypes, node, isPlaceholder, workflow, isCollapsed]);
 
   const widgets = useMemo(() => {
     if (!isKSampler) return allResolvedWidgets;
@@ -207,13 +216,14 @@ export const NodeCard = memo(function NodeCard({
 
   // Get input widgets (COMBO dropdowns). For placeholder nodes, derive from both mechanisms.
   const inputWidgets = useMemo(() => {
+    if (isCollapsed) return [];
     if (isPlaceholder && workflow) {
       const slotPromoted = resolveSubgraphPlaceholderInputWidgetDefs(node, workflow, nodeTypes);
       const proxyPromoted = resolveSubgraphProxyInputWidgetDefs(node, workflow, nodeTypes);
       return [...slotPromoted, ...proxyPromoted];
     }
     return getInputWidgetDefinitions(nodeTypes, node);
-  }, [nodeTypes, node, isPlaceholder, workflow]);
+  }, [nodeTypes, node, isPlaceholder, workflow, isCollapsed]);
   const visibleInputWidgets = useMemo(
     () => inputWidgets.filter((inputWidget) => !inputWidget.connected),
     [inputWidgets]
@@ -596,7 +606,7 @@ export const NodeCard = memo(function NodeCard({
         id={`node-card-${node.id}`}
         className={`
         node-card-inner
-        ${inGroup ? `rounded-lg shadow-sm ${isCollapsed && isBypassed ? 'pt-1 pb-0' : 'py-1'}` : `rounded-xl shadow-md px-2 ${isCollapsed && isBypassed ? 'pt-1 pb-0' : 'py-1'} mb-3`}
+        ${inGroup ? `rounded-lg ${isCollapsed ? 'shadow-none px-1 py-0' : 'shadow-sm py-1'}` : `${isCollapsed ? 'rounded-lg shadow-sm px-1 py-0 mb-1' : 'rounded-xl shadow-md px-2 py-1 mb-3'}`}
         border-2
         ${nodeCardBorderClass}
         ${isBypassed ? 'bg-purple-100/50' : 'bg-white'}
@@ -635,6 +645,9 @@ export const NodeCard = memo(function NodeCard({
             nodeId={node.id}
             nodeHierarchicalKey={nodeHierarchicalKey}
             isLoraManagerNode={isLoraManagerNode}
+            isLoraExecutionNode={isLoraExecutionNode}
+            loraExecutionMode={loraExecutionMode}
+            onSetLoraExecutionMode={(mode: LoraExecutionMode) => setLoraExecutionMode(mode)}
             showFastGroupsConfigAction={isFastGroupsBypasser}
             isBypassed={isBypassed}
             onEnterSubgraph={onEnterSubgraph}
@@ -654,6 +667,9 @@ export const NodeCard = memo(function NodeCard({
             toggleBypass={toggleBypass}
             setItemHidden={setItemHidden}
             onDeleteNode={() => setShowDeleteModal(true)}
+            onDuplicateNode={() => duplicateNodeAfter(nodeHierarchicalKey)}
+            onInsertLoraNode={() => insertLoraNodeDynamic(nodeHierarchicalKey)}
+            canInsertLoraNode={Boolean(nodeTypes?.LoraLoader)}
             onMoveNode={onMoveNode ?? (() => {})}
             connectionHighlightMode={connectionHighlightMode}
             setConnectionHighlightMode={setConnectionHighlightMode}
@@ -679,61 +695,63 @@ export const NodeCard = memo(function NodeCard({
             </div>
           )}
 
-          <div id={`node-content-${node.id}`} className={`node-expanded-content ${isBypassed ? 'opacity-60 grayscale' : ''}`}>
-            <NodeCardConnectionsSection
-              nodeId={node.id}
-              nodeType={node.type}
-              inputs={connectionInputs}
-              outputs={visibleOutputs}
-              allInputs={node.inputs}
-              allOutputs={node.outputs}
-            />
-
-            <NodeCardParameters
-              node={node}
-              isBypassed={isBypassed}
-              isKSampler={isKSampler}
-              workflowExists={Boolean(workflow)}
-              nodeTypesExists={Boolean(nodeTypes)}
-              visibleInputWidgets={visibleInputWidgets}
-              visibleWidgets={visibleWidgets}
-              errorInputNames={errorInputNames}
-              onUpdateNodeWidget={handleUpdateNodeWidget}
-              onUpdateNodeWidgets={handleUpdateNodeWidgets}
-              getWidgetIndexForInput={handleGetWidgetIndexForInput}
-              findSeedWidgetIndex={handleFindSeedWidgetIndex}
-              setSeedMode={handleSetSeedMode}
-              isWidgetPinned={isWidgetPinned}
-              toggleWidgetPin={toggleWidgetPin}
-              resolveWidgetValue={resolveWidgetValue}
-              showFastGroupConfig={showFastGroupConfig}
-              setShowFastGroupConfig={setShowFastGroupConfig}
-            />
-            {noteText && (
-              <NodeCardNote
-                noteText={noteText}
-                noteLinkified={noteLinkified}
-                noteWidgetIndex={noteWidgetIndex}
-                isEditingNote={isEditingNote}
-                setIsEditingNote={setIsEditingNote}
-                onUpdateNote={handleUpdateNote}
-                noteTextareaRef={noteTextareaRef}
-                onNoteTap={handleNoteTap}
+          {!isCollapsed && (
+            <div id={`node-content-${node.id}`} className={`node-expanded-content ${isBypassed ? 'opacity-60 grayscale' : ''}`}>
+              <NodeCardConnectionsSection
+                nodeId={node.id}
+                nodeType={node.type}
+                inputs={connectionInputs}
+                outputs={visibleOutputs}
+                allInputs={node.inputs}
+                allOutputs={node.outputs}
               />
-            )}
 
-            <NodeCardOutputPreview
-              show={showImagePreview || showTextPreview || !!latentPreviewUrl}
-              previewImage={effectivePreviewImage}
-              latentPreviewUrl={latentPreviewUrl}
-              previewText={showTextPreview ? nodeTextOutput : null}
-              displayName={displayName}
-              onImageClick={() => onImageClick?.(previewList, 0)}
-              isExecuting={Boolean(isExecuting)}
-              overallProgress={overallProgress}
-              displayNodeProgress={displayNodeProgress}
-            />
-          </div>
+              <NodeCardParameters
+                node={node}
+                isBypassed={isBypassed}
+                isKSampler={isKSampler}
+                workflowExists={Boolean(workflow)}
+                nodeTypesExists={Boolean(nodeTypes)}
+                visibleInputWidgets={visibleInputWidgets}
+                visibleWidgets={visibleWidgets}
+                errorInputNames={errorInputNames}
+                onUpdateNodeWidget={handleUpdateNodeWidget}
+                onUpdateNodeWidgets={handleUpdateNodeWidgets}
+                getWidgetIndexForInput={handleGetWidgetIndexForInput}
+                findSeedWidgetIndex={handleFindSeedWidgetIndex}
+                setSeedMode={handleSetSeedMode}
+                isWidgetPinned={isWidgetPinned}
+                toggleWidgetPin={toggleWidgetPin}
+                resolveWidgetValue={resolveWidgetValue}
+                showFastGroupConfig={showFastGroupConfig}
+                setShowFastGroupConfig={setShowFastGroupConfig}
+              />
+              {noteText && (
+                <NodeCardNote
+                  noteText={noteText}
+                  noteLinkified={noteLinkified}
+                  noteWidgetIndex={noteWidgetIndex}
+                  isEditingNote={isEditingNote}
+                  setIsEditingNote={setIsEditingNote}
+                  onUpdateNote={handleUpdateNote}
+                  noteTextareaRef={noteTextareaRef}
+                  onNoteTap={handleNoteTap}
+                />
+              )}
+
+              <NodeCardOutputPreview
+                show={showImagePreview || showTextPreview || !!latentPreviewUrl}
+                previewImage={effectivePreviewImage}
+                latentPreviewUrl={latentPreviewUrl}
+                previewText={showTextPreview ? nodeTextOutput : null}
+                displayName={displayName}
+                onImageClick={() => onImageClick?.(previewList, 0)}
+                isExecuting={Boolean(isExecuting)}
+                overallProgress={overallProgress}
+                displayNodeProgress={displayNodeProgress}
+              />
+            </div>
+          )}
         </div>
       </div>
       </div>

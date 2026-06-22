@@ -7,6 +7,7 @@ import { SaveWorkflowPanel } from './AppMenu/SaveWorkflowPanel';
 import { TemplatesPanel } from './AppMenu/TemplatesPanel';
 import { UserWorkflowsPanel } from './AppMenu/UserWorkflowsPanel';
 import { RecentWorkflowsPanel } from './AppMenu/RecentWorkflowsPanel';
+import { FavoriteWorkflowsPanel } from './AppMenu/FavoriteWorkflowsPanel';
 import { GenerationSettingsPanel } from './AppMenu/GenerationSettingsPanel';
 import { getDisplayName } from './AppMenu/userWorkflowHelpers';
 import { useWorkflowStore } from '@/hooks/useWorkflow';
@@ -19,6 +20,7 @@ import {
   restartServer,
   fetchSystemStats,
   fetchCpuPercent,
+  getWorkflowFavorite,
   saveUserWorkflow,
   getWorkflowTemplates,
   loadTemplateWorkflow,
@@ -26,6 +28,7 @@ import {
   type WorkflowTemplates,
   type SystemStats,
   getFileWorkflow,
+  type WorkflowFavoriteRecord,
   type AssetSource
 } from '@/api/client';
 
@@ -34,7 +37,7 @@ interface AppMenuProps {
   onClose: () => void;
 }
 
-type TabType = 'menu' | 'userWorkflows' | 'recent' | 'templates' | 'save' | 'pasteJson' | 'aboutLegend' | 'generationSettings';
+type TabType = 'menu' | 'userWorkflows' | 'favoriteWorkflows' | 'recent' | 'templates' | 'save' | 'pasteJson' | 'aboutLegend' | 'generationSettings';
 
 async function waitForServerToReturn(timeoutMs = 45000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -87,6 +90,7 @@ export function AppMenu({
   const [menuSectionsOpen, setMenuSectionsOpen] = useState({
     load: true,
     save: true,
+    models: true,
     appearance: true,
     server: false,
     info: true,
@@ -95,6 +99,7 @@ export function AppMenu({
   // Refs for scrolling to sections
   const loadSectionRef = useRef<HTMLElement>(null);
   const saveSectionRef = useRef<HTMLElement>(null);
+  const modelsSectionRef = useRef<HTMLElement>(null);
   const appearanceSectionRef = useRef<HTMLElement>(null);
   const serverSectionRef = useRef<HTMLElement>(null);
   const infoSectionRef = useRef<HTMLElement>(null);
@@ -109,6 +114,8 @@ export function AppMenu({
       setTimeout(() => loadSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     } else if (!prev.save && current.save) {
       setTimeout(() => saveSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+    } else if (!prev.models && current.models) {
+      setTimeout(() => modelsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     } else if (!prev.appearance && current.appearance) {
       setTimeout(() => appearanceSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     } else if (!prev.server && current.server) {
@@ -130,6 +137,7 @@ export function AppMenu({
       setMenuSectionsOpen({
         load: true,
         save: true,
+        models: true,
         appearance: true,
         server: false,
         info: true,
@@ -240,6 +248,29 @@ export function AppMenu({
       vibrate(10);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load template');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadFavoriteWorkflowRecord = (record: WorkflowFavoriteRecord) => {
+    loadWorkflow(record.workflow, `favorite-${record.groupKey}.json`, { source: { type: 'favorite', groupKey: record.groupKey } });
+    setError(null);
+    onClose();
+    vibrate(10);
+  };
+
+  const handleLoadFavoriteWorkflow = (record: WorkflowFavoriteRecord) => {
+    loadFavoriteWorkflowRecord(record);
+  };
+
+  const handleLoadFavoriteWorkflowFromRecent = async (groupKey: string) => {
+    try {
+      setLoading(true);
+      const record = await getWorkflowFavorite(groupKey);
+      loadFavoriteWorkflowRecord(record);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load favorite workflow');
     } finally {
       setLoading(false);
     }
@@ -387,6 +418,7 @@ export function AppMenu({
           fileInputRef={fileInputRef}
           loadSectionRef={loadSectionRef}
           saveSectionRef={saveSectionRef}
+          modelsSectionRef={modelsSectionRef}
           appearanceSectionRef={appearanceSectionRef}
           serverSectionRef={serverSectionRef}
           infoSectionRef={infoSectionRef}
@@ -397,6 +429,7 @@ export function AppMenu({
             setMenuSectionsOpen((prev) => ({ ...prev, [section]: !prev[section] }))
           }
           onOpenRecent={() => setActiveTab('recent')}
+          onOpenFavoriteWorkflows={() => setActiveTab('favoriteWorkflows')}
           onOpenUserWorkflows={() => setActiveTab('userWorkflows')}
           onOpenTemplates={() => setActiveTab('templates')}
           onOpenPasteJson={() => setActiveTab('pasteJson')}
@@ -418,12 +451,19 @@ export function AppMenu({
           onLoadWorkflow={handleLoadUserWorkflow}
         />
       )}
+      {activeTab === 'favoriteWorkflows' && (
+        <FavoriteWorkflowsPanel
+          onBack={() => setActiveTab('menu')}
+          onLoadWorkflow={handleLoadFavoriteWorkflow}
+        />
+      )}
       {activeTab === 'recent' && (
         <RecentWorkflowsPanel
           onBack={() => setActiveTab('menu')}
           onLoadUserWorkflow={handleLoadUserWorkflow}
           onLoadTemplate={handleLoadTemplate}
           onLoadFileWorkflow={handleLoadFileWorkflow}
+          onLoadFavoriteWorkflow={handleLoadFavoriteWorkflowFromRecent}
         />
       )}
       {activeTab === 'templates' && (

@@ -121,7 +121,9 @@ export function UserWorkflowsPanel({
                 >
                   <FolderIcon className="w-5 h-5 text-amber-500" />
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-900 truncate">{file.name}</p>
+                    <p className="font-medium text-gray-900 whitespace-normal break-words leading-snug">
+                      {file.name}
+                    </p>
                   </div>
                 </button>
               );
@@ -136,11 +138,11 @@ export function UserWorkflowsPanel({
               >
                 <WorkflowIcon className="w-5 h-5 text-gray-600" />
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-gray-900 truncate">
+                  <p className="font-medium text-gray-900 whitespace-normal break-words leading-snug">
                     {file.name.replace(/\.json$/, '')}
                   </p>
                   {isSearching && relPath.includes('/') && (
-                    <p className="text-xs text-gray-400 truncate">
+                    <p className="text-xs text-gray-400 whitespace-normal break-words leading-snug mt-0.5">
                       {relPath.replace(/\/[^/]+$/, '')}
                     </p>
                   )}

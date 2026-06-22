@@ -1,7 +1,8 @@
 import { createPortal } from 'react-dom';
+import type { FileItem } from '@/api/client';
 import type { Workflow } from '@/api/types';
 import type { UnifiedItem } from './types';
-import { CopyIcon, DownloadIcon, EyeIcon, EyeOffIcon, TrashIcon, WorkflowIcon } from '@/components/icons';
+import { CopyIcon, DownloadDeviceIcon, EyeIcon, EyeOffIcon, FolderIcon, TrashIcon, WorkflowIcon, BookmarkOutlineIcon } from '@/components/icons';
 import { useQueueStore } from '@/hooks/useQueue';
 import { ContextMenuBuilder } from '@/components/menus/ContextMenuBuilder';
 
@@ -12,6 +13,8 @@ interface QueueImageMenuProps {
     right: number;
     imageSrc: string;
     workflow?: Workflow;
+    prompt?: Record<string, unknown>;
+    file?: FileItem;
     promptId?: string;
     hasVideoOutputs?: boolean;
     hasImageOutputs?: boolean;
@@ -20,8 +23,11 @@ interface QueueImageMenuProps {
   onClose: () => void;
   onLoadWorkflow: (workflow: Workflow, promptId: string) => void;
   onCopyWorkflow: (workflow?: Workflow) => void;
-  onDownload: (src: string) => Promise<void>;
-  onBatchDownload: (sources: string[]) => Promise<void>;
+  onFavoriteWorkflow: (payload: { workflow?: Workflow; prompt?: Record<string, unknown>; file?: FileItem; src?: string; promptId?: string }) => void;
+  onSaveToAlbum: (src: string) => Promise<void>;
+  onSaveToFiles: (src: string) => Promise<void>;
+  onBatchSaveToAlbum: (sources: string[]) => Promise<void>;
+  onBatchSaveToFiles: (sources: string[]) => Promise<void>;
   onDeleteHistory: (promptId: string) => void;
   getBatchSources: (promptId: string, list: UnifiedItem[]) => string[];
 }
@@ -32,8 +38,11 @@ export function QueueImageMenu({
   onClose,
   onLoadWorkflow,
   onCopyWorkflow,
-  onDownload,
-  onBatchDownload,
+  onFavoriteWorkflow,
+  onSaveToAlbum,
+  onSaveToFiles,
+  onBatchSaveToAlbum,
+  onBatchSaveToFiles,
   onDeleteHistory,
   getBatchSources
 }: QueueImageMenuProps) {
@@ -53,14 +62,37 @@ export function QueueImageMenu({
     onClose();
   };
 
-  const handleDownloadClick = async () => {
-    const batchSources = menuState?.promptId
-      ? getBatchSources(menuState.promptId, unifiedList)
-      : [];
+  const handleFavoriteWorkflowClick = () => {
+    onFavoriteWorkflow({
+      workflow: menuState?.workflow,
+      prompt: menuState?.prompt,
+      file: menuState?.file,
+      src: menuState?.imageSrc,
+      promptId: menuState?.promptId,
+    });
+    onClose();
+  };
+
+  const getCurrentBatchSources = () => menuState?.promptId
+    ? getBatchSources(menuState.promptId, unifiedList)
+    : [];
+
+  const handleSaveToAlbumClick = async () => {
+    const batchSources = getCurrentBatchSources();
     if (batchSources.length > 1) {
-      await onBatchDownload(batchSources);
+      await onBatchSaveToAlbum(batchSources);
     } else if (menuState) {
-      await onDownload(menuState.imageSrc);
+      await onSaveToAlbum(menuState.imageSrc);
+    }
+    onClose();
+  };
+
+  const handleSaveToFilesClick = async () => {
+    const batchSources = getCurrentBatchSources();
+    if (batchSources.length > 1) {
+      await onBatchSaveToFiles(batchSources);
+    } else if (menuState) {
+      await onSaveToFiles(menuState.imageSrc);
     }
     onClose();
   };
@@ -102,12 +134,27 @@ export function QueueImageMenu({
             disabled: !menuState.workflow
           },
           {
-            key: 'download',
+            key: 'favorite-workflow',
+            label: 'Favorite workflow shortcut',
+            icon: <BookmarkOutlineIcon className="w-4 h-4" />,
+            onClick: handleFavoriteWorkflowClick,
+            disabled: !menuState.workflow || !menuState.file
+          },
+          {
+            key: 'save-album',
             label: menuState.promptId && getBatchSources(menuState.promptId, unifiedList).length > 1
-              ? 'Download batch'
-              : 'Download',
-            icon: <DownloadIcon className="w-4 h-4" />,
-            onClick: handleDownloadClick
+              ? 'Save batch to album'
+              : 'Save image to album',
+            icon: <DownloadDeviceIcon className="w-4 h-4" />,
+            onClick: handleSaveToAlbumClick
+          },
+          {
+            key: 'save-files',
+            label: menuState.promptId && getBatchSources(menuState.promptId, unifiedList).length > 1
+              ? 'Save batch to Files'
+              : 'Save to Files',
+            icon: <FolderIcon className="w-4 h-4" />,
+            onClick: handleSaveToFilesClick
           },
           {
             key: 'toggle-images',

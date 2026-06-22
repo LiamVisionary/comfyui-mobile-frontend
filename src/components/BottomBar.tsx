@@ -14,8 +14,8 @@ export type BottomBarProps = {
   currentPanel: 'workflow' | 'queue' | 'outputs';
   viewerOpen?: boolean;
   followQueue?: boolean;
-  onToggleFollowQueue?: () => void;
   onOpenFollowQueue?: () => void;
+  onCloseFollowQueue?: () => void;
 };
 
 export function BottomBar(props: BottomBarProps) {
@@ -23,8 +23,8 @@ export function BottomBar(props: BottomBarProps) {
     currentPanel,
     viewerOpen = false,
     followQueue = false,
-    onToggleFollowQueue,
     onOpenFollowQueue,
+    onCloseFollowQueue,
   } = props;
   const isOutputsPanel = currentPanel === 'outputs';
   const workflow = useWorkflowStore((s) => s.workflow);
@@ -82,12 +82,13 @@ export function BottomBar(props: BottomBarProps) {
         {!isOutputsPanel && <PinnedWidgetButton />}
 
         <FollowQueueButton
+          currentPanel={currentPanel}
           viewerOpen={viewerOpen}
           followQueue={followQueue}
           queueSize={queueSize}
           overallProgress={overallProgress}
-          onToggleFollowQueue={onToggleFollowQueue}
           onOpenFollowQueue={onOpenFollowQueue}
+          onCloseFollowQueue={onCloseFollowQueue}
         />
       </div>
 

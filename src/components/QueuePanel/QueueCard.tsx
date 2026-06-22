@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getImageUrl } from '@/api/client';
+import { getImageUrl, getPreviewUrl, getThumbnailUrl } from '@/api/client';
 import type { Workflow } from '@/api/types';
 import { useQueueStore } from '@/hooks/useQueue';
 import { extractMetadata } from '@/utils/metadata';
@@ -8,6 +8,7 @@ import type { HistoryOutputImage } from '@/api/types';
 import { isHistoryEntryData, type UnifiedItem, type ViewerImage } from './types';
 import { getMediaType, isVideoFilename } from '@/utils/media';
 import { ContextMenuButton } from '@/components/buttons/ContextMenuButton';
+import { ProgressiveImage } from '@/components/ProgressiveImage';
 
 interface QueueCardProps {
   item: UnifiedItem;
@@ -16,11 +17,12 @@ interface QueueCardProps {
   overallProgress?: number | null;
   executingNodeLabel?: string | null;
   onDelete: () => void;
+  onCancel: () => void;
   onStop: () => void;
   onImageClick?: (images: Array<ViewerImage>, index: number, enableFollowQueue?: boolean) => void;
   viewerImages: Array<ViewerImage>;
   runningImages: HistoryOutputImage[];
-  onOpenMenu: (payload: { top: number; right: number; imageSrc: string; workflow?: Workflow; promptId?: string; hasVideoOutputs?: boolean; hasImageOutputs?: boolean }) => void;
+  onOpenMenu: (payload: { top: number; right: number; imageSrc: string; workflow?: Workflow; prompt?: Record<string, unknown>; file?: { id: string; name: string; type: 'image' | 'video'; fullUrl?: string }; promptId?: string; hasVideoOutputs?: boolean; hasImageOutputs?: boolean }) => void;
   downloaded: Record<string, boolean>;
   isTopDoneItem: boolean;
 }
@@ -32,6 +34,7 @@ export function QueueCard({
   overallProgress,
   executingNodeLabel,
   onDelete,
+  onCancel,
   onStop,
   onImageClick,
   viewerImages,
@@ -108,10 +111,6 @@ export function QueueCard({
     if (!queueItemHideImages || !hasVideoOutputs) return displayImages;
     return displayImages.filter((img: HistoryOutputImage) => isVideoFilename(img.filename));
   }, [displayImages, hasVideoOutputs, queueItemHideImages]);
-  const itemImages = savedImages.map((img: HistoryOutputImage) => ({
-    src: getImageUrl(img.filename, img.subfolder, img.type),
-    alt: 'Generation'
-  }));
   const placeholderClass = 'aspect-square w-full bg-gray-100 flex flex-col items-center justify-center text-gray-400';
   const durationSeconds = historyData?.durationSeconds;
   const success = historyData ? historyData.success !== false : true;
@@ -124,6 +123,24 @@ export function QueueCard({
     : 'text-sm';
   const durationLabel = formatDuration(durationSeconds);
   const displayNodeProgress = overallProgress === 100 ? 100 : progress;
+  const rowThumb = visibleImages[0];
+  const rowThumbSrc = rowThumb
+    ? (isVideoFilename(rowThumb.filename) ? getImageUrl(rowThumb.filename, rowThumb.subfolder, rowThumb.type) : getThumbnailUrl(rowThumb.filename, rowThumb.subfolder, rowThumb.type))
+    : '';
+  const savedCount = savedImages.length;
+  const visibleCount = visibleImages.length;
+  const rowTitle = isRunning
+    ? 'Generating now'
+    : isPending
+      ? 'Waiting in queue'
+      : success
+        ? `${savedCount || visibleCount || 0} saved ${savedCount === 1 ? 'output' : 'outputs'}`
+        : 'Failed generation';
+  const rowSubtitle = isDone
+    ? `${new Date(item.timestamp || 0).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}${durationLabel ? ` · ${durationLabel}` : ''}`
+    : isPending
+      ? `Queue #${(item.data as { number?: number }).number ?? '—'}`
+      : (executingNodeLabel ? `Executing: ${executingNodeLabel}` : 'Running workflow');
 
   const metadata = useMemo(() => {
     if (!showQueueMetadata || !item.data.prompt) return null;
@@ -171,6 +188,11 @@ export function QueueCard({
     onStop();
   };
 
+  const handleCancelClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onCancel();
+  };
+
   const handleDeleteClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     onDelete();
@@ -180,12 +202,23 @@ export function QueueCard({
     event.stopPropagation();
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const right = Math.max(8, window.innerWidth - rect.right);
-    const firstSrc = itemImages[0]?.src || '';
+    const firstSaved = savedImages[0];
+    const firstSrc = firstSaved ? getImageUrl(firstSaved.filename, firstSaved.subfolder, firstSaved.type) : '';
+    const firstPath = firstSaved
+      ? (firstSaved.subfolder ? `${firstSaved.subfolder}/${firstSaved.filename}` : firstSaved.filename)
+      : '';
     onOpenMenu({
       top: rect.bottom + 6,
       right,
       imageSrc: firstSrc,
       workflow: historyData?.workflow,
+      prompt: historyData?.prompt,
+      file: firstSaved ? {
+        id: `${firstSaved.type}/${firstPath}`,
+        name: firstSaved.filename,
+        type: isVideoFilename(firstSaved.filename) ? 'video' : 'image',
+        fullUrl: firstSrc,
+      } : undefined,
       promptId: item.data.prompt_id || item.id,
       hasVideoOutputs,
       hasImageOutputs
@@ -221,7 +254,7 @@ export function QueueCard({
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden transition-all duration-300">
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden transition-all duration-300" data-queue-card-id={item.id} data-queue-status={item.status}>
       <div onClick={handleToggle} className={`px-3 py-2 border-b flex justify-between items-center cursor-pointer select-none ${isRunning ? 'bg-blue-50 border-blue-100' : 'bg-gray-50 border-gray-100'}`}>
         <div className="flex items-center gap-1 min-w-0">
           <button
@@ -238,7 +271,7 @@ export function QueueCard({
           {isPending && <span className="text-xs font-bold text-gray-400">PENDING</span>}
           {isRunning && <span className="text-xs font-bold text-blue-600">GENERATING</span>}
           {isDone && <span className="text-xs font-bold text-gray-500">{new Date(item.timestamp || 0).toLocaleTimeString()}</span>}
-          {isRunning && !expanded && isActuallyRunning && overallProgress != null && (
+          {isRunning && !expanded && isActuallyRunning && overallProgress != null && overallProgress < 100 && (
             <span className="ml-1 text-xs font-semibold text-blue-600">{Math.min(100, Math.max(0, overallProgress))}%</span>
           )}
         </div>
@@ -248,7 +281,7 @@ export function QueueCard({
               onClick={handleStopClick}
               className="px-2 py-1 text-xs font-semibold text-white bg-red-600 rounded hover:bg-red-700"
             >
-              Stop
+              Cancel
             </button>
           ) : isDone ? (
             <ContextMenuButton
@@ -270,6 +303,54 @@ export function QueueCard({
         </div>
       </div>
 
+      <div className="flex items-center gap-3 px-3 py-3 bg-white">
+        <button
+          type="button"
+          className="relative h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-gray-100 text-gray-400"
+          onClick={rowThumbSrc ? handleMediaClick(rowThumbSrc, 0, isTopDoneItem) : handleToggleButtonClick}
+          aria-label={rowThumbSrc ? 'Open output in large viewer' : 'Show queue item details'}
+        >
+          {rowThumbSrc ? (
+            isVideoFilename(rowThumb?.filename || '') ? (
+              <video src={rowThumbSrc} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+            ) : (
+              <img src={rowThumbSrc} alt="Generation thumbnail" className="h-full w-full object-cover" loading={isTopDoneItem || isRunning ? 'eager' : 'lazy'} decoding="async" />
+            )
+          ) : (
+            <div className="flex h-full w-full items-center justify-center">
+              {isRunning ? <div className="h-7 w-7 animate-spin rounded-full border-4 border-blue-200 border-t-blue-500" /> : <HourglassIcon className="h-7 w-7 text-gray-300" />}
+            </div>
+          )}
+          {visibleCount > 1 && (
+            <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-bold text-white">{visibleCount}</span>
+          )}
+        </button>
+        <button type="button" onClick={handleToggleButtonClick} className="min-w-0 flex-1 text-left">
+          <div className="flex items-center gap-2">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${isRunning ? 'bg-blue-500 animate-pulse' : isPending ? 'bg-amber-400' : success ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="truncate text-sm font-bold text-gray-900">{rowTitle}</span>
+          </div>
+          <p className="mt-1 truncate text-xs text-gray-500">{rowSubtitle}</p>
+          {isRunning && overallProgress != null && overallProgress < 100 && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200">
+              <div className="h-full bg-blue-500" style={{ width: `${Math.min(100, Math.max(0, overallProgress))}%` }} />
+            </div>
+          )}
+          {(isRunning || isPending) && (
+            <button
+              type="button"
+              onClick={handleCancelClick}
+              className="mt-2 rounded-md bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700"
+            >
+              {isRunning ? 'Cancel current run' : 'Remove from queue'}
+            </button>
+          )}
+          {isDone && visibleCount > 0 && (
+            <p className="mt-1 text-[11px] font-medium text-gray-400">Tap thumbnail for large view · tap row for details</p>
+          )}
+        </button>
+      </div>
+
       {expanded && (
         <div className="relative w-full animate-in fade-in duration-200">
           {visibleImages.length > 0 ? (
@@ -281,8 +362,11 @@ export function QueueCard({
                   const isPreview = img.type !== 'output';
                   const labelIndex = isPreview ? ++previewIndex : ++saveIndex;
                   const labelText = `${isPreview ? 'Preview' : 'Save'} #${labelIndex}`;
-                  const src = getImageUrl(img.filename, img.subfolder, img.type);
-                  const isDownloaded = downloaded[src];
+                  const fullSrc = getImageUrl(img.filename, img.subfolder, img.type);
+                  const src = isPreview || isVideoFilename(img.filename)
+                    ? fullSrc
+                    : getPreviewUrl(img.filename, img.subfolder, img.type);
+                  const isDownloaded = downloaded[fullSrc];
                   const showLabel = visibleImages.length > 1;
 
                   return (
@@ -334,12 +418,16 @@ export function QueueCard({
                           )}
                         </>
                       ) : (
-                        <img
-                          src={src}
+                        <ProgressiveImage
+                          fullSrc={fullSrc}
+                          previewSrc={src}
                           alt="Generation"
                           className="w-full h-auto block"
-                          loading="lazy"
-                          onClick={handleMediaClick(src, i, isTopDoneItem)}
+                          loading={isTopDoneItem || isRunning ? 'eager' : 'lazy'}
+                          decoding="async"
+                          fetchPriority={isTopDoneItem || isRunning ? 'high' : 'auto'}
+                          loadFull={false}
+                          onClick={handleMediaClick(fullSrc, i, isTopDoneItem)}
                         />
                       )}
                       {isDownloaded && (
@@ -371,7 +459,7 @@ export function QueueCard({
             </div>
           ) : isRunning ? (
             <div className={placeholderClass} style={{ minHeight: '300px' }}>
-              {isActuallyRunning && overallProgress != null ? (
+              {isActuallyRunning && overallProgress != null && overallProgress < 100 ? (
                 <div className="w-full max-w-xs px-4">
                   <p className="font-semibold text-base text-gray-900 mb-3">
                     Executing: {executingNodeLabel || 'Running'}

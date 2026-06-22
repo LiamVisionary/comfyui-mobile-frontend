@@ -3,6 +3,8 @@ import { persist } from 'zustand/middleware';
 import * as api from '@/api/client';
 import type { FileItem, AssetSource, SortMode } from '@/api/client';
 
+const SHOULD_SYNC_FAVORITES = import.meta.env.MODE !== 'test';
+
 export interface FilterState {
   search: string;
   favoritesOnly: boolean;
@@ -44,6 +46,7 @@ interface OutputsState {
   navigateUp: () => void;
   fetchFolders: () => Promise<void>;
   fetchFiles: () => Promise<void>;
+  fetchFavorites: () => Promise<void>;
   setFilter: (filter: Partial<FilterState>) => void;
   setSort: (sort: SortState) => void;
   setViewMode: (mode: 'grid' | 'list') => void;
@@ -145,8 +148,23 @@ export const useOutputsStore = create<OutputsState>()(
             showHidden
           );
           set({ files, isLoading: false });
+          void get().fetchFavorites();
         } catch (err) {
           set({ error: (err as Error).message, isLoading: false });
+        }
+      },
+
+      fetchFavorites: async () => {
+        try {
+          if (!SHOULD_SYNC_FAVORITES) return;
+          const localFavorites = get().favorites;
+          let serverFavorites = await api.listImageFavorites();
+          if (serverFavorites.length === 0 && localFavorites.length > 0) {
+            serverFavorites = await api.updateImageFavorites(localFavorites, 'add');
+          }
+          set({ favorites: serverFavorites });
+        } catch (err) {
+          console.error('Failed to fetch favorites:', err);
         }
       },
 
@@ -170,14 +188,26 @@ export const useOutputsStore = create<OutputsState>()(
       },
 
       toggleFavorite: (id) => {
+        let previousFavorites: string[] = [];
+        let op: 'add' | 'remove' = 'add';
         set((s) => {
+          previousFavorites = s.favorites;
           const exists = s.favorites.includes(id);
+          op = exists ? 'remove' : 'add';
           return {
             favorites: exists
               ? s.favorites.filter(p => p !== id)
               : [...s.favorites, id]
           };
         });
+        if (SHOULD_SYNC_FAVORITES) {
+          api.updateImageFavorites([id], op)
+            .then((favorites) => set({ favorites }))
+            .catch((err) => {
+              console.error('Failed to update favorite:', err);
+              set({ favorites: previousFavorites });
+            });
+        }
       },
 
       toggleSelectionMode: () => {
@@ -237,12 +267,22 @@ export const useOutputsStore = create<OutputsState>()(
           ids.forEach((id) => next.add(id));
           return { favorites: Array.from(next) };
         });
+        if (SHOULD_SYNC_FAVORITES) {
+          api.updateImageFavorites(ids, 'add')
+            .then((favorites) => set({ favorites }))
+            .catch((err) => console.error('Failed to add favorites:', err));
+        }
       },
 
       removeFavorites: (ids) => {
         set((s) => ({
           favorites: s.favorites.filter((id) => !ids.includes(id))
         }));
+        if (SHOULD_SYNC_FAVORITES) {
+          api.updateImageFavorites(ids, 'remove')
+            .then((favorites) => set({ favorites }))
+            .catch((err) => console.error('Failed to remove favorites:', err));
+        }
       },
 
       refresh: () => {
@@ -293,7 +333,7 @@ export const useOutputsStore = create<OutputsState>()(
     }),
     {
       name: 'outputs-storage',
-      version: 1,
+      version: 2,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persistedState: any, version: number) => {
         if (version === 0) {
@@ -318,8 +358,7 @@ export const useOutputsStore = create<OutputsState>()(
         viewMode: state.viewMode,
         showHidden: state.showHidden,
         sort: state.sort,
-        filter: state.filter,
-        favorites: state.favorites
+        filter: state.filter
       })
     }
   )

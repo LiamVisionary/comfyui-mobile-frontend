@@ -4,11 +4,13 @@ import { MenuErrorNotice } from './MenuErrorNotice';
 import { MenuServerSection } from './MenuServerSection';
 import { MenuLoadSection } from './MenuLoadSection';
 import { MenuSaveSection } from './MenuSaveSection';
+import { MenuModelManagerSection } from './MenuModelManagerSection';
 import { MenuAboutSection } from './MenuAboutSection';
 
 interface MenuSectionsOpen {
   load: boolean;
   save: boolean;
+  models: boolean;
   appearance: boolean;
   server: boolean;
   info: boolean;
@@ -28,6 +30,7 @@ interface MainMenuPanelProps {
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   loadSectionRef: React.RefObject<HTMLElement | null>;
   saveSectionRef: React.RefObject<HTMLElement | null>;
+  modelsSectionRef: React.RefObject<HTMLElement | null>;
   appearanceSectionRef: React.RefObject<HTMLElement | null>;
   serverSectionRef: React.RefObject<HTMLElement | null>;
   infoSectionRef: React.RefObject<HTMLElement | null>;
@@ -36,6 +39,7 @@ interface MainMenuPanelProps {
   onLoadFromFile: () => void;
   onToggleSection: (section: keyof MenuSectionsOpen) => void;
   onOpenRecent: () => void;
+  onOpenFavoriteWorkflows: () => void;
   onOpenUserWorkflows: () => void;
   onOpenTemplates: () => void;
   onOpenPasteJson: () => void;
@@ -60,6 +64,7 @@ export function MainMenuPanel({
   fileInputRef,
   loadSectionRef,
   saveSectionRef,
+  modelsSectionRef,
   serverSectionRef,
   infoSectionRef,
   onDismissError,
@@ -67,6 +72,7 @@ export function MainMenuPanel({
   onLoadFromFile,
   onToggleSection,
   onOpenRecent,
+  onOpenFavoriteWorkflows,
   onOpenUserWorkflows,
   onOpenTemplates,
   onOpenPasteJson,
@@ -99,6 +105,7 @@ export function MainMenuPanel({
         onFileChange={onFileChange}
         onLoadFromFile={onLoadFromFile}
         onOpenRecent={onOpenRecent}
+        onOpenFavoriteWorkflows={onOpenFavoriteWorkflows}
         onOpenUserWorkflows={onOpenUserWorkflows}
         onOpenTemplates={onOpenTemplates}
         onOpenPasteJson={onOpenPasteJson}
@@ -114,6 +121,12 @@ export function MainMenuPanel({
         onToggle={() => onToggleSection('save')}
         onSave={onSave}
         onOpenSaveAs={onOpenSaveAs}
+      />
+
+      <MenuModelManagerSection
+        open={menuSectionsOpen.models}
+        sectionRef={modelsSectionRef}
+        onToggle={() => onToggleSection('models')}
       />
 
       {/*

@@ -14,7 +14,10 @@ interface QueueListProps {
   overallProgress?: number | null;
   executingNodeLabel?: string | null;
   onDeleteItem: (item: UnifiedItem) => void;
+  onCancelItem: (item: UnifiedItem) => void;
   onStop: () => void;
+  onPurgeQueue: () => void;
+  canPurgeQueue: boolean;
   onImageClick?: (images: Array<ViewerImage>, index: number, enableFollowQueue?: boolean) => void;
   viewerImages: Array<ViewerImage>;
   promptOutputs: Record<string, HistoryOutputImage[]>;
@@ -34,7 +37,10 @@ export function QueueList({
   overallProgress,
   executingNodeLabel,
   onDeleteItem,
+  onCancelItem,
   onStop,
+  onPurgeQueue,
+  canPurgeQueue,
   onImageClick,
   viewerImages,
   promptOutputs,
@@ -50,6 +56,28 @@ export function QueueList({
       data-queue-list="true"
       onScroll={onScroll}
     >
+      {unifiedList.length > 0 && (
+        <div className="sticky top-0 z-10 -mx-4 -mt-4 mb-2 border-b border-gray-200 bg-gray-100/95 px-4 py-3 backdrop-blur">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-gray-900">Queue + recent outputs</h2>
+              <p className="text-xs text-gray-500">
+                Active jobs and generated images in one newest-first row list. Tap a thumbnail to view it larger, then close to return here.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onPurgeQueue}
+              disabled={!canPurgeQueue}
+              className="shrink-0 rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-gray-300 disabled:text-gray-500"
+              aria-label="Cancel the running item and clear all queued items"
+            >
+              Purge queue
+            </button>
+          </div>
+        </div>
+      )}
+
       {unifiedList.length === 0 && !hasLoadedOnce && (
         <div className="flex items-center justify-center min-h-[calc(100vh-180px)] text-gray-400">
           <div className="text-center">
@@ -81,6 +109,7 @@ export function QueueList({
           overallProgress={overallProgress}
           executingNodeLabel={executingNodeLabel}
           onDelete={() => onDeleteItem(item)}
+          onCancel={() => onCancelItem(item)}
           onStop={onStop}
           onImageClick={onImageClick}
           viewerImages={viewerImages}

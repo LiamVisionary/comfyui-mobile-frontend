@@ -3,7 +3,7 @@ import { FolderIcon } from "@/components/icons";
 import { getUserImages, uploadImageFile } from "@/api/client";
 import type { FileItem } from "@/api/client";
 import { useWorkflowErrorsStore } from "@/hooks/useWorkflowErrors";
-import { isOutputFileSelectable } from "./outputPickerUtils";
+import { isOutputFileSelectable, sortOutputPickerFiles } from "./outputPickerUtils";
 
 interface OutputFilePickerProps {
   open: boolean;
@@ -31,14 +31,14 @@ export function OutputFilePicker({
     setIsLoading(true);
     try {
       const result = await getUserImages("output", 1000, 0, "modified", false, nextFolder);
-      setFiles(result);
+      setFiles(sortOutputPickerFiles(result, supportsVideoUpload));
     } catch (err) {
       console.error("Failed to load output files:", err);
       setError(`Failed to browse output folder${nextFolder ? `: ${nextFolder}` : ""}`);
     } finally {
       setIsLoading(false);
     }
-  }, [setError]);
+  }, [setError, supportsVideoUpload]);
 
   const handleClose = () => {
     onClose();

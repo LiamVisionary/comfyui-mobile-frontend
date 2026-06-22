@@ -77,3 +77,20 @@ export function buildViewerImages(
 
   return images;
 }
+
+export function buildViewerImagesFromFiles(files: FileItem[], alt = 'Output'): ViewerImage[] {
+  return files
+    .filter((file) => file.type === 'image' || file.type === 'video')
+    .sort((a, b) => (b.date ?? 0) - (a.date ?? 0))
+    .map((file) => {
+      const mediaType = file.type === 'video' ? 'video' : getMediaType(file.name);
+      return {
+        src: file.fullUrl ?? file.previewUrl ?? '',
+        alt,
+        mediaType,
+        filename: file.name,
+        file,
+      };
+    })
+    .filter((item) => item.src.length > 0);
+}

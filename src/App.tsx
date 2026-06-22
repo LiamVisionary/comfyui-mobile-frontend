@@ -16,7 +16,7 @@ import { useSwipeNavigation } from './hooks/useSwipeNavigation';
 import { useTextareaFocus } from './hooks/useTextareaFocus';
 import { useBookmarksStore } from './hooks/useBookmarks';
 import * as api from './api/client';
-import { buildViewerImages, type ViewerImage } from './utils/viewerImages';
+import type { ViewerImage } from './utils/viewerImages';
 import { OutputsPanel } from './components/OutputsPanel';
 import { useOutputsStore } from './hooks/useOutputs';
 
@@ -78,8 +78,10 @@ function App() {
   const ensureHierarchicalKeysAndRepair = useWorkflowStore((s) => s.ensureHierarchicalKeysAndRepair);
   const theme = useThemeStore((s) => s.theme);
   const workflowLoadedAt = useWorkflowStore((s) => s.workflowLoadedAt);
+  const isExecuting = useWorkflowStore((s) => s.isExecuting);
+  const setExecutionState = useWorkflowStore((s) => s.setExecutionState);
   const fetchQueue = useQueueStore((s) => s.fetchQueue);
-  const history = useHistoryStore((s) => s.history);
+  const fetchHistory = useHistoryStore((s) => s.fetchHistory);
 
   useEffect(() => {
     if (!isSwiping && swipeOffset !== 0) {
@@ -116,6 +118,33 @@ function App() {
     fetchQueue();
   }, [fetchQueue]);
 
+  // ComfyUI can finish while the websocket is suspended or the browser was backgrounded.
+  // Poll while the UI believes a run is active and reconcile against the authoritative queue;
+  // this prevents stale progress bars from sitting around after /queue is empty.
+  useEffect(() => {
+    if (!isExecuting) return;
+    let cancelled = false;
+    const reconcileQueue = async () => {
+      await fetchQueue();
+      if (cancelled) return;
+      const { running, pending } = useQueueStore.getState();
+      if (running.length === 0 && pending.length === 0) {
+        setExecutionState(false, null, null, 0);
+        window.setTimeout(() => {
+          fetchHistory();
+        }, 1500);
+      }
+    };
+    reconcileQueue().catch((err) => console.error('Failed to reconcile queue:', err));
+    const intervalId = window.setInterval(() => {
+      reconcileQueue().catch((err) => console.error('Failed to reconcile queue:', err));
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [isExecuting, fetchQueue, fetchHistory, setExecutionState]);
+
   const openViewer = (images: Array<ViewerImage>, index: number, enableFollowQueue = true) => {
     // Disable swipe navigation before opening viewer
     setSwipeEnabled(false);
@@ -132,24 +161,32 @@ function App() {
     setFollowQueue(enableFollowQueue);
   };
 
-  // Open viewer in follow queue mode (from bottom bar button)
-  const openFollowQueueViewer = () => {
-    const allImages = buildViewerImages(history, { alt: 'Generation' });
+  // Toggle the unified queue/recent-output row view from the bottom-right button.
+  // The image viewer is entered by tapping a row thumbnail, so closing the viewer
+  // returns to the scannable queue/recent list instead of dumping the user elsewhere.
+  const openFollowQueueViewer = async () => {
+    if (currentPanel === 'queue') {
+      setCurrentPanel('workflow');
+      setFollowQueue(false);
+      resetSwipeState();
+      return;
+    }
 
-    // Disable swipe navigation before opening viewer
-    setSwipeEnabled(false);
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) {
+      active.blur();
+    }
+    delete document.body.dataset.textareaFocus;
+
+    // Open the queue panel immediately. Refreshes happen in the panel after it
+    // paints; awaiting history here makes the button feel dead on phones/tunnels.
     resetSwipeState();
-
-    const firstNewImageIndex = allImages.length > 0 ? 0 : -1;
-
-    setViewerState({
-      viewerImages: allImages,
-      viewerIndex: firstNewImageIndex,
-      viewerScale: 1,
-      viewerTranslate: { x: 0, y: 0 },
-      viewerOpen: true,
-    });
-    setFollowQueue(true);
+    setCurrentPanel('queue');
+    setFollowQueue(false);
+    void fetchQueue();
+    window.setTimeout(() => {
+      void fetchHistory();
+    }, 100);
   };
 
   useLayoutEffect(() => {
@@ -197,8 +234,8 @@ function App() {
         currentPanel={currentPanel}
         viewerOpen={viewerOpen}
         followQueue={followQueue}
-        onToggleFollowQueue={() => setFollowQueue(!followQueue)}
         onOpenFollowQueue={openFollowQueueViewer}
+        onCloseFollowQueue={handleImageViewerClose}
       />
 
       <ImageViewer

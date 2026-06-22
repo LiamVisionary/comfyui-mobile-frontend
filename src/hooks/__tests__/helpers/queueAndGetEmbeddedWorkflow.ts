@@ -1,6 +1,7 @@
 import { expect, vi } from 'vitest';
 import type { Workflow } from '@/api/types';
 import { useWorkflowStore } from '@/hooks/useWorkflow';
+import { decryptWorkflowFromStorage } from '@/utils/workflowEncryption';
 
 export async function queueAndGetEmbeddedWorkflow(): Promise<Workflow> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -29,5 +30,5 @@ export async function queueAndGetEmbeddedWorkflow(): Promise<Workflow> {
   };
   const embedded = body.extra_data?.extra_pnginfo?.workflow;
   expect(embedded).toBeDefined();
-  return embedded as Workflow;
+  return decryptWorkflowFromStorage<Workflow>(embedded);
 }

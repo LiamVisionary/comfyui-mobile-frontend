@@ -259,6 +259,73 @@ button, .touchable {
   scroll-margin-top: var(--top-bar-offset, 0px);
 }
 
+/* Desktop workflow layout
+   Mobile remains a single vertical feed. On desktop, nodes become dense,
+   readable cards instead of stretching edge-to-edge across ultrawide screens. */
+.workflow-node-grid {
+  display: block;
+}
+
+@media (min-width: 1024px) {
+  .workflow-desktop-canvas {
+    padding-left: clamp(1.5rem, 3vw, 3rem);
+    padding-right: clamp(1.5rem, 3vw, 3rem);
+  }
+
+  .workflow-node-grid {
+    display: block;
+    column-width: 380px;
+    column-gap: 1rem;
+  }
+
+  .workflow-node-grid--root {
+    max-width: 1800px;
+    margin: 0 auto;
+  }
+
+  .workflow-node-grid--nested {
+    column-width: 340px;
+    column-gap: 0.75rem;
+    padding: 0.25rem 0.5rem 0.5rem;
+  }
+
+  .workflow-node-grid > [data-reposition-item] {
+    min-width: 0;
+    display: block;
+    break-inside: avoid;
+    margin-bottom: 1rem;
+  }
+
+  .workflow-node-grid > .group-wrapper,
+  .workflow-node-grid > [data-reposition-item^="group-"] {
+    min-width: 0;
+  }
+
+  .node-card-inner {
+    height: 100%;
+  }
+}
+
+@media (min-width: 1440px) {
+  .workflow-node-grid {
+    column-width: 410px;
+  }
+
+  .workflow-node-grid--nested {
+    column-width: 360px;
+  }
+}
+
+@media (min-width: 1920px) {
+  .workflow-node-grid--root {
+    max-width: 2020px;
+  }
+
+  .workflow-node-grid {
+    column-width: 440px;
+  }
+}
+
 /* Type colors for connection buttons */
 .type-IMAGE { background-color: #a855f7; color: white; }
 .type-LATENT { background-color: #ec4899; color: white; }

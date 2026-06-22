@@ -1,4 +1,5 @@
 import type { NodeTypes, QueueInfo, History, Workflow } from './types';
+import { decryptWorkflowFromStorage, encryptWorkflowForStorage } from '@/utils/workflowEncryption';
 
 
 function getOrCreateClientId(): string {
@@ -13,22 +14,81 @@ function getOrCreateClientId(): string {
 
 export const clientId = getOrCreateClientId();
 
+const comfyRoute = (path: string): string => path;
+const apiUrl = (path: string): string => {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return new URL(path, window.location.origin).toString();
+  }
+  return path;
+};
+
+type CompatibleLora = { id?: unknown; name?: unknown };
+
+export function cloneWithCompatibleLoraChoices(types: NodeTypes, loras: CompatibleLora[]): NodeTypes {
+  const wrapperChoices = loras
+    .map((lora) => String(lora.id || lora.name || '').trim())
+    .filter(Boolean);
+  if (wrapperChoices.length === 0) return types;
+
+  const loraLoader = types.LoraLoader;
+  const loraInput = loraLoader?.input?.required?.lora_name;
+  if (!loraLoader || !loraInput || !Array.isArray(loraInput[0])) return types;
+
+  const existingChoices = loraInput[0]
+    .map((choice) => String(choice || '').trim())
+    .filter(Boolean);
+  const choices = Array.from(new Set([...existingChoices, ...wrapperChoices]));
+
+  return {
+    ...types,
+    LoraLoader: {
+      ...loraLoader,
+      input: {
+        ...loraLoader.input,
+        required: {
+          ...loraLoader.input.required,
+          lora_name: [choices, loraInput[1]] as unknown as typeof loraInput,
+        },
+      },
+    },
+  };
+}
+
+async function getCompatibleLoras(): Promise<CompatibleLora[]> {
+  try {
+    // Wrapper-owned endpoint. When the app is served directly by raw ComfyUI this
+    // endpoint does not exist, so failures intentionally fall back to ComfyUI's
+    // unfiltered object_info enum.
+    const wrapperLorasPath = ['', 'api', 'loras'].join('/');
+    const response = await fetch(wrapperLorasPath, { cache: 'no-store' });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data?.loras) ? data.loras : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getNodeTypes(): Promise<NodeTypes> {
-  const response = await fetch(`/api/object_info`);
-  if (!response.ok) throw new Error('Failed to fetch node types');
-  return response.json();
+  const [nodeTypesResponse, compatibleLoras] = await Promise.all([
+    fetch(comfyRoute('/api/object_info')),
+    getCompatibleLoras(),
+  ]);
+  if (!nodeTypesResponse.ok) throw new Error('Failed to fetch node types');
+  const types = await nodeTypesResponse.json();
+  return cloneWithCompatibleLoraChoices(types, compatibleLoras);
 }
 
 export async function getQueue(): Promise<QueueInfo> {
-  const response = await fetch(`/api/queue`);
+  const response = await fetch(comfyRoute('/api/queue'));
   if (!response.ok) throw new Error('Failed to fetch queue');
   return response.json();
 }
 
 export async function getHistory(maxItems?: number): Promise<History> {
   const url = maxItems
-    ? `/api/history?max_items=${maxItems}`
-    : `/api/history`;
+    ? comfyRoute(`/api/history?max_items=${maxItems}`)
+    : comfyRoute('/api/history');
   const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch history');
   return response.json();
@@ -52,7 +112,7 @@ export interface LoraManagerRegistryNode {
 
 export async function registerLoraManagerNodes(nodes: LoraManagerRegistryNode[]): Promise<void> {
   if (nodes.length === 0) return;
-  const response = await fetch(`/api/lm/register-nodes`, {
+  const response = await fetch(comfyRoute('/api/lm/register-nodes'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ nodes })
@@ -70,7 +130,7 @@ export async function requestTriggerWords(
   nodeIds: TriggerWordTargetReference[]
 ): Promise<void> {
   if (!nodeIds || nodeIds.length === 0) return;
-  const response = await fetch(`/api/lm/loras/get_trigger_words`, {
+  const response = await fetch(comfyRoute('/api/lm/loras/get_trigger_words'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -91,7 +151,7 @@ export interface UserDataFile {
 }
 
 export async function listUserWorkflows(): Promise<UserDataFile[]> {
-  const response = await fetch(`/api/v2/userdata?path=workflows`);
+  const response = await fetch(comfyRoute('/api/v2/userdata?path=workflows'));
   if (!response.ok) {
     // Folder may not exist yet
     if (response.status === 404) return [];
@@ -110,24 +170,26 @@ function encodeUserDataPath(path: string): string {
 }
 
 export async function loadUserWorkflow(filename: string): Promise<Workflow> {
-  const response = await fetch(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`, {
+  const response = await fetch(comfyRoute(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`), {
     cache: 'no-store',
   });
   if (!response.ok) throw new Error('Failed to load workflow');
-  return response.json();
+  const stored = await response.json();
+  return decryptWorkflowFromStorage<Workflow>(stored);
 }
 
 export async function saveUserWorkflow(filename: string, workflow: Workflow): Promise<void> {
-  const response = await fetch(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}?overwrite=true`, {
+  const encryptedWorkflow = await encryptWorkflowForStorage(workflow);
+  const response = await fetch(comfyRoute(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}?overwrite=true`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(workflow)
+    body: JSON.stringify(encryptedWorkflow)
   });
-  if (!response.ok) throw new Error('Failed to save workflow');
+  if (!response.ok) throw new Error('Failed to save encrypted workflow');
 }
 
 export async function deleteUserWorkflow(filename: string): Promise<void> {
-  const response = await fetch(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`, {
+  const response = await fetch(comfyRoute(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`), {
     method: 'DELETE'
   });
   if (!response.ok) throw new Error('Failed to delete workflow');
@@ -139,25 +201,25 @@ export interface WorkflowTemplates {
 }
 
 export async function getWorkflowTemplates(): Promise<WorkflowTemplates> {
-  const response = await fetch(`/api/workflow_templates`);
+  const response = await fetch(comfyRoute('/api/workflow_templates'));
   if (!response.ok) throw new Error('Failed to fetch templates');
   return response.json();
 }
 
 export async function loadTemplateWorkflow(moduleName: string, templateName: string): Promise<Workflow> {
   const response = await fetch(
-    `/api/workflow_templates/${encodeURIComponent(moduleName)}/${encodeURIComponent(templateName)}`
+    comfyRoute(`/api/workflow_templates/${encodeURIComponent(moduleName)}/${encodeURIComponent(templateName)}`)
   );
   if (!response.ok) throw new Error('Failed to load template');
   return response.json();
 }
 
 export async function interruptExecution(): Promise<void> {
-  await fetch(`/api/interrupt`, { method: 'POST' });
+  await fetch(comfyRoute('/api/interrupt'), { method: 'POST' });
 }
 
 export async function clearQueue(): Promise<void> {
-  await fetch(`/api/queue`, {
+  await fetch(comfyRoute('/api/queue'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clear: true })
@@ -165,7 +227,7 @@ export async function clearQueue(): Promise<void> {
 }
 
 export async function deleteQueueItem(promptId: string): Promise<void> {
-  await fetch(`/api/queue`, {
+  await fetch(comfyRoute('/api/queue'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ delete: [promptId] })
@@ -188,7 +250,7 @@ export async function uploadImageFile(
     form.append('overwrite', options.overwrite ? 'true' : 'false');
   }
 
-  const response = await fetch(`/upload/image`, {
+  const response = await fetch(comfyRoute('/upload/image'), {
     method: 'POST',
     body: form
   });
@@ -201,7 +263,7 @@ export async function uploadImageFile(
 }
 
 export async function deleteHistoryItem(promptId: string): Promise<void> {
-  await fetch(`/api/history`, {
+  await fetch(comfyRoute('/api/history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ delete: [promptId] })
@@ -210,7 +272,7 @@ export async function deleteHistoryItem(promptId: string): Promise<void> {
 
 export async function deleteHistoryItems(promptIds: string[]): Promise<void> {
   if (promptIds.length === 0) return;
-  await fetch(`/api/history`, {
+  await fetch(comfyRoute('/api/history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ delete: promptIds })
@@ -218,7 +280,7 @@ export async function deleteHistoryItems(promptIds: string[]): Promise<void> {
 }
 
 export async function clearHistory(): Promise<void> {
-  await fetch(`/api/history`, {
+  await fetch(comfyRoute('/api/history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clear: true })
@@ -226,7 +288,15 @@ export async function clearHistory(): Promise<void> {
 }
 
 export function getImageUrl(filename: string, subfolder: string, type: string): string {
-  return `/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${encodeURIComponent(type)}`;
+  return comfyRoute(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${encodeURIComponent(type)}`);
+}
+
+export function getThumbnailUrl(filename: string, subfolder: string, source: string = 'output'): string {
+  return `/mobile/api/thumbnail?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&source=${encodeURIComponent(source)}`;
+}
+
+export function getPreviewUrl(filename: string, subfolder: string, source: string = 'output'): string {
+  return `/mobile/api/preview?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&source=${encodeURIComponent(source)}`;
 }
 
 export function connectWebSocket(
@@ -284,6 +354,80 @@ export interface FileItem {
 
 export type AssetSource = 'output' | 'input' | 'temp';
 export type SortMode = 'modified' | 'modified-reverse' | 'name' | 'name-reverse' | 'size' | 'size-reverse';
+
+export interface WorkflowFavoriteRecord {
+  groupKey: string;
+  workflowHash: string;
+  inputHash: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  favoriteCount: number;
+  imageIds?: string[];
+  inputRefs: string[];
+  representativeImage: {
+    filename: string;
+    path: string;
+    source: string;
+    promptId?: string;
+    src?: string;
+  };
+  workflow: Workflow;
+}
+
+export async function listWorkflowFavorites(): Promise<WorkflowFavoriteRecord[]> {
+  const response = await fetch('/mobile/api/workflow-favorites', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Failed to load favorite workflows');
+  const data = await response.json();
+  return Array.isArray(data.favorites) ? data.favorites : [];
+}
+
+export async function getWorkflowFavorite(groupKey: string): Promise<WorkflowFavoriteRecord> {
+  const favorites = await listWorkflowFavorites();
+  const favorite = favorites.find((record) => record.groupKey === groupKey);
+  if (!favorite) throw new Error('Favorite workflow no longer exists');
+  return favorite;
+}
+
+export async function saveWorkflowFavorite(record: WorkflowFavoriteRecord): Promise<WorkflowFavoriteRecord> {
+  const response = await fetch('/mobile/api/workflow-favorites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(record),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to save favorite workflow');
+  }
+  return data.favorite as WorkflowFavoriteRecord;
+}
+
+export async function deleteWorkflowFavorite(groupKey: string): Promise<void> {
+  const response = await fetch(`/mobile/api/workflow-favorites?groupKey=${encodeURIComponent(groupKey)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) throw new Error('Failed to delete favorite workflow');
+}
+
+export async function listImageFavorites(): Promise<string[]> {
+  const response = await fetch(apiUrl('/mobile/api/favorites'), { cache: 'no-store' });
+  if (!response.ok) throw new Error('Failed to load favorites');
+  const data = await response.json();
+  return Array.isArray(data.favorites) ? data.favorites : [];
+}
+
+export async function updateImageFavorites(ids: string[], op: 'add' | 'remove' | 'set'): Promise<string[]> {
+  const response = await fetch(apiUrl('/mobile/api/favorites'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, op }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to update favorites');
+  }
+  return Array.isArray(data.favorites) ? data.favorites : [];
+}
 
 // Mobile Files API - browse output/input directories
 interface MobileFileItem {
@@ -367,8 +511,8 @@ export async function getUserImages(
       id: `${mode}/${f.path}`,
       name: f.name,
       type: f.type as 'image' | 'video',
-      previewUrl: `/mobile/api/thumbnail?filename=${encodeURIComponent(f.name)}&subfolder=${encodeURIComponent(folder)}&source=${mode}`,
-      fullUrl: `/view?filename=${encodeURIComponent(f.name)}&type=${mode}&subfolder=${encodeURIComponent(folder)}`,
+      previewUrl: getThumbnailUrl(f.name, folder, mode),
+      fullUrl: comfyRoute(`/view?filename=${encodeURIComponent(f.name)}&type=${mode}&subfolder=${encodeURIComponent(folder)}`),
       date: f.date,
       size: f.size,
     };
@@ -404,7 +548,7 @@ export async function getFileWorkflow(
   if (!data.workflow) {
     throw new Error('No workflow metadata found');
   }
-  return data.workflow as Workflow;
+  return decryptWorkflowFromStorage<Workflow>(data.workflow);
 }
 
 export async function getFileWorkflowAvailability(
@@ -519,7 +663,7 @@ export interface SystemStats {
 }
 
 export async function fetchSystemStats(): Promise<SystemStats> {
-  const response = await fetch(`/system_stats`, { cache: 'no-store' });
+  const response = await fetch(comfyRoute('/system_stats'), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Failed to fetch system stats');
   }
@@ -531,7 +675,7 @@ const RECENT_WORKFLOWS_PATH = 'mobile/recent_workflows.json';
 export async function loadRecentWorkflowsFromServer(): Promise<unknown[]> {
   try {
     const response = await fetch(
-      `/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}`,
+      comfyRoute(`/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}`),
       { cache: 'no-store' },
     );
     if (!response.ok) return [];
@@ -545,7 +689,7 @@ export async function loadRecentWorkflowsFromServer(): Promise<unknown[]> {
 export async function saveRecentWorkflowsToServer(entries: unknown[]): Promise<void> {
   try {
     await fetch(
-      `/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}?overwrite=true`,
+      comfyRoute(`/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}?overwrite=true`),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

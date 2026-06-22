@@ -49,6 +49,7 @@ export function WorkflowTopBarMenu({
   const searchOpen = useWorkflowStore((s) => s.searchOpen);
   const setSearchOpen = useWorkflowStore((s) => s.setSearchOpen);
   const setSearchQuery = useWorkflowStore((s) => s.setSearchQuery);
+  const insertLoraNodeDynamic = useWorkflowStore((s) => s.insertLoraNodeDynamic);
   const connectionButtonsVisible = useWorkflowStore((s) => s.connectionButtonsVisible);
   const toggleConnectionButtonsVisible = useWorkflowStore(
     (s) => s.toggleConnectionButtonsVisible,
@@ -61,6 +62,7 @@ export function WorkflowTopBarMenu({
   );
 
   const hasWorkflow = Boolean(workflow);
+  const canInsertLoraNode = Boolean(hasWorkflow && nodeTypes?.LoraLoader);
 
   // Nodes and groups for the currently-visible scope (root or a subgraph).
   // Fold-all / unfold-all should operate on visible items only.
@@ -219,6 +221,13 @@ export function WorkflowTopBarMenu({
     closeMenu();
   };
 
+  const handleAddLoraClick = () => {
+    const insertedId = insertLoraNodeDynamic();
+    if (insertedId != null) {
+      closeMenu();
+    }
+  };
+
   const handleAddGroupClick = () => {
     onAddGroup();
     closeMenu();
@@ -324,6 +333,13 @@ export function WorkflowTopBarMenu({
                 icon: <PlusIcon className="w-4 h-4" />,
                 onClick: handleAddNodeClick,
                 hidden: !hasWorkflow
+              },
+              {
+                key: 'add-lora-dynamic',
+                label: 'Add LoRA',
+                icon: <PlusIcon className="w-4 h-4" />,
+                onClick: handleAddLoraClick,
+                hidden: !canInsertLoraNode
               },
               {
                 key: 'add-group',

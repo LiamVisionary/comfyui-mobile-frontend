@@ -60,7 +60,9 @@ export function NodeCardHeader({
   return (
     <div
       id={`node-header-${nodeId}`}
-      className={`node-header flex items-center justify-between px-3 -mx-3 cursor-pointer gap-3 transition-[margin,padding,border-color] duration-200 ease-out ${
+      className={`node-header flex items-center justify-between cursor-pointer transition-[margin,padding,border-color] duration-200 ease-out ${
+        isCollapsed ? 'px-2 -mx-2 gap-2 min-h-8' : 'px-3 -mx-3 gap-3'
+      } ${
         !isCollapsed ? 'mb-3 pb-2 border-b-[3px]' : 'mb-0 pb-0 border-b-0'
       } ${
         isBypassed ? `bg-purple-200 border-purple-300 -mt-1 pt-1 rounded-t-xl ${isCollapsed ? 'pb-1 -mb-1 rounded-b-xl' : ''}` : !isCollapsed ? 'border-gray-100' : ''
@@ -71,10 +73,10 @@ export function NodeCardHeader({
       <div id={`node-title-container-${nodeId}`} className="flex items-center gap-1 min-w-0">
         <button
           onClick={handleFoldButtonClick}
-          className="w-8 h-8 -ml-2 flex items-center justify-center text-gray-400 hover:text-gray-600 shrink-0"
+          className={`${isCollapsed ? 'w-6 h-6 -ml-1' : 'w-8 h-8 -ml-2'} flex items-center justify-center text-gray-400 hover:text-gray-600 shrink-0`}
         >
           {isCollapsed ? (
-            <CaretRightIcon className="w-6 h-6" />
+            <CaretRightIcon className="w-4 h-4" />
           ) : (
             <CaretDownIcon className="w-6 h-6" />
           )}
@@ -95,7 +97,7 @@ export function NodeCardHeader({
             className="font-semibold text-gray-900 flex-1 min-w-0 text-sm bg-white border border-gray-200 rounded px-2 py-1"
           />
         ) : (
-          <h3 id={`node-display-name-${nodeId}`} className={`font-semibold text-gray-900 select-none flex-1 min-w-0 ${isCollapsed ? 'whitespace-nowrap overflow-hidden text-ellipsis' : 'whitespace-normal break-words'}`}>
+          <h3 id={`node-display-name-${nodeId}`} className={`font-semibold text-gray-900 select-none flex-1 min-w-0 ${isCollapsed ? 'text-sm leading-5 whitespace-nowrap overflow-hidden text-ellipsis' : 'whitespace-normal break-words'}`}>
             {displayName}
           </h3>
         )}

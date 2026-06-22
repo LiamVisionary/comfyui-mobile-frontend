@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useOutputsStore } from '@/hooks/useOutputs';
 import { useWorkflowStore } from '@/hooks/useWorkflow';
@@ -7,10 +7,19 @@ import { useHistoryWorkflowByFileId } from '@/hooks/useHistoryWorkflowByFileId';
 import type { FileItem } from '@/api/client';
 import type { ViewerImage } from '@/utils/viewerImages';
 import { getMediaType } from '@/utils/media';
-import { deleteFile, moveFiles, createFolder, getUserImages, renameFile } from '@/api/client';
+import {
+  deleteFile,
+  moveFiles,
+  createFolder,
+  getUserImages,
+  renameFile,
+  getFileWorkflow,
+  saveWorkflowFavorite,
+} from '@/api/client';
 import {
   FolderIcon, BookmarkIconSvg, BookmarkOutlineIcon, TrashIcon
 } from '@/components/icons';
+import { buildWorkflowFavoriteRecord } from '@/utils/workflowFavorites';
 import { useDismissOnOutsideClick } from '@/hooks/useDismissOnOutsideClick';
 import { useAnchoredMenuPosition } from '@/hooks/useAnchoredMenuPosition';
 import { FilterModal } from './OutputsPanel/FilterModal';
@@ -101,6 +110,7 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
   const deleteOnCompleteRef = useRef<((file: FileItem) => void) | null>(null);
   const loadOnCompleteRef = useRef<(() => void) | null>(null);
   const loadWorkflowCloseViewerRef = useRef(false);
+  const syncedOutputFavoriteWorkflowIdsRef = useRef<Set<string>>(new Set());
 
   const closeDeleteModal = () => {
     setDeleteTarget(null);
@@ -176,6 +186,49 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
   const displayedFiles = getDisplayedFiles();
   const sortMode = useOutputsStore((s) => s.sort.mode);
   const historyWorkflowByFileId = useHistoryWorkflowByFileId();
+
+  const saveFavoriteWorkflowShortcutForFile = useCallback(async (file: FileItem) => {
+    if (file.type !== 'image') return false;
+    const path = resolveFilePath(file, source);
+    const historyMatch = historyWorkflowByFileId.get(file.id);
+    const workflowToSave = historyMatch?.workflow ?? await getFileWorkflow(path, source);
+    const record = await buildWorkflowFavoriteRecord({
+      workflow: workflowToSave,
+      file,
+      src: file.fullUrl,
+      promptId: historyMatch?.promptId,
+    });
+    await saveWorkflowFavorite(record);
+    return true;
+  }, [historyWorkflowByFileId, source]);
+
+  const saveFavoriteWorkflowShortcutsForFiles = useCallback(async (filesToSave: FileItem[]) => {
+    const uniqueImages = filesToSave.filter((file, index, all) => (
+      file.type === 'image' && all.findIndex((candidate) => candidate.id === file.id) === index
+    ));
+    if (uniqueImages.length === 0) return;
+    const results = await Promise.allSettled(uniqueImages.map((file) => saveFavoriteWorkflowShortcutForFile(file)));
+    const savedCount = results.filter((result) => result.status === 'fulfilled' && result.value).length;
+    if (savedCount > 0) {
+      console.info(`Saved ${savedCount} favorite workflow shortcut${savedCount === 1 ? '' : 's'} from output favorites.`);
+    }
+    const failedCount = results.length - savedCount;
+    if (failedCount > 0) {
+      console.warn(`Could not create ${failedCount} favorite workflow shortcut${failedCount === 1 ? '' : 's'} because workflow metadata was unavailable.`);
+    }
+  }, [saveFavoriteWorkflowShortcutForFile]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const favoriteFilesWithMetadata = displayedFiles.filter((file) => (
+      favorites.includes(file.id)
+      && file.type === 'image'
+      && !syncedOutputFavoriteWorkflowIdsRef.current.has(file.id)
+    ));
+    if (favoriteFilesWithMetadata.length === 0) return;
+    favoriteFilesWithMetadata.forEach((file) => syncedOutputFavoriteWorkflowIdsRef.current.add(file.id));
+    void saveFavoriteWorkflowShortcutsForFiles(favoriteFilesWithMetadata);
+  }, [visible, displayedFiles, favorites, saveFavoriteWorkflowShortcutsForFiles]);
 
   const openOutputsViewer = (file: FileItem) => {
     const displayed = getDisplayedFiles();
@@ -258,6 +311,11 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
     }
     if (!item.file) return;
     requestLoadWorkflowFromFile(item.file, { closeViewer: true });
+  };
+
+  const handleOutputsViewerFavoriteWorkflow = (item: ViewerImage) => {
+    if (!item.file) return;
+    void saveFavoriteWorkflowShortcutsForFiles([item.file]);
   };
 
   // Separate folders from files
@@ -356,8 +414,13 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
 
   const handleFavorite = () => {
      if (!menuTarget) return;
-     toggleFavorite(menuTarget.file.id);
+     const file = menuTarget.file;
+     const isAdding = !favorites.includes(file.id);
+     toggleFavorite(file.id);
      setMenuTarget(null);
+     if (isAdding) {
+       void saveFavoriteWorkflowShortcutsForFiles([file]);
+     }
   };
 
   const handleSelectSingle = () => {
@@ -493,6 +556,8 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
       removeFavorites(selectedIds);
     } else {
       addFavorites(selectedIds);
+      const selectedFiles = displayedFiles.filter((file) => selectedIds.includes(file.id));
+      void saveFavoriteWorkflowShortcutsForFiles(selectedFiles);
     }
     setSelectionActionOpen(false);
   };
@@ -1067,6 +1132,7 @@ export function OutputsPanel({ visible }: { visible: boolean }) {
          onDelete={handleOutputsViewerDelete}
          onLoadInWorkflow={handleOutputsViewerLoadInWorkflow}
          onLoadWorkflow={handleOutputsViewerLoadWorkflow}
+         onFavoriteWorkflow={handleOutputsViewerFavoriteWorkflow}
          showMetadataToggle
         />
       </div>

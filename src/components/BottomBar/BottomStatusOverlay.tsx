@@ -67,8 +67,9 @@ export function BottomStatusOverlay() {
   const displayNodeProgress = overallProgress === 100 ? 100 : progress;
   const hasErrorToast = (Boolean(error) || hasNodeErrors) && !errorsDismissed;
   const progressDismissed = dismissedRunKey !== null && dismissedRunKey === runKey;
+  const isProgressActivelyRunning = isExecuting || running.length > 0;
   const showProgress =
-    overallProgress !== null &&
+    isProgressActivelyRunning &&
     !isQueuePanel &&
     !isOutputsPanel &&
     !progressDismissed;

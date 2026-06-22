@@ -81,6 +81,30 @@ const nodeTypes: NodeTypes = {
   }
 };
 
+const loraNodeTypes: NodeTypes = {
+  LoraLoader: {
+    input: {
+      required: {
+        model: ['MODEL'],
+        clip: ['CLIP'],
+        lora_name: [['example.safetensors'] as unknown as string],
+        strength_model: ['FLOAT', { default: 1 }],
+        strength_clip: ['FLOAT', { default: 1 }]
+      }
+    },
+    input_order: {
+      required: ['model', 'clip', 'lora_name', 'strength_model', 'strength_clip']
+    },
+    output: ['MODEL', 'CLIP'],
+    output_name: ['MODEL', 'CLIP'],
+    name: 'LoraLoader',
+    display_name: 'Load LoRA',
+    description: '',
+    python_module: '',
+    category: 'loaders'
+  }
+};
+
 const comboNodeTypes: NodeTypes = {
   ComboNode: {
     input: {
@@ -241,6 +265,164 @@ describe('useWorkflow editing actions', () => {
     ).toBeUndefined();
     expect(next.connectionHighlightModes[rootNodeHierarchicalKey(2)]).toBeUndefined();
     expect(flattenLayoutToNodeOrder(next.mobileLayout!)).toEqual([1, 3]);
+  });
+
+  it('duplicateNodeAfter inserts a copied node between the source and its downstream node', () => {
+    const source = makeNode(100, {
+      type: 'LoRAStack',
+      inputs: [{ name: 'lora_stack', type: 'LORA_STACK', link: null }],
+      outputs: [{ name: 'lora_stack', type: 'LORA_STACK', links: [7] }],
+      widgets_values: ['first.safetensors', 0.8]
+    });
+    const downstream = makeNode(101, {
+      type: 'LoRAStack',
+      inputs: [{ name: 'lora_stack', type: 'LORA_STACK', link: 7 }],
+      outputs: [{ name: 'lora_stack', type: 'LORA_STACK', links: null }],
+      widgets_values: ['second.safetensors', 0.7]
+    });
+
+    useWorkflowStore.setState({
+      workflow: makeWorkflow([source, downstream], [[7, 100, 0, 101, 0, 'LORA_STACK']]),
+      ...rootNodeStableRegistry([100, 101]),
+      mobileLayout: {
+        root: [{ type: 'node', id: 100 }, { type: 'node', id: 101 }],
+        groups: {},
+        subgraphs: {},
+        hiddenBlocks: {}
+      }
+    });
+
+    const newId = useWorkflowStore.getState().duplicateNodeAfter(rootNodeHierarchicalKey(100));
+    const next = useWorkflowStore.getState();
+
+    expect(newId).toBe(101);
+    expect(next.workflow?.nodes.map((n) => n.id)).toEqual([100, 101, 102]);
+    expect(flattenLayoutToNodeOrder(next.mobileLayout)).toEqual([100, 101, 102]);
+    expect(next.workflow?.last_node_id).toBe(102);
+    expect(next.workflow?.last_link_id).toBe(8);
+    expect(next.workflow?.links).toEqual([
+      [7, 101, 0, 102, 0, 'LORA_STACK'],
+      [8, 100, 0, 101, 0, 'LORA_STACK']
+    ]);
+    expect(next.workflow?.nodes.find((node) => node.id === 100)?.outputs[0]?.links).toEqual([8]);
+    expect(next.workflow?.nodes.find((node) => node.id === 101)?.inputs[0]?.link).toBe(8);
+    expect(next.workflow?.nodes.find((node) => node.id === 101)?.outputs[0]?.links).toEqual([7]);
+    expect(next.workflow?.nodes.find((node) => node.id === 102)?.inputs[0]?.link).toBe(7);
+    expect(next.workflow?.nodes.find((node) => node.id === 101)?.widgets_values).toEqual(['first.safetensors', 0.8]);
+  });
+
+  it('insertLoraNodeDynamic inserts a LoraLoader between model/clip sources and consumers', () => {
+    const checkpoint = makeNode(1, {
+      type: 'CheckpointLoaderSimple',
+      outputs: [
+        { name: 'MODEL', type: 'MODEL', links: [10] },
+        { name: 'CLIP', type: 'CLIP', links: [11, 12] }
+      ]
+    });
+    const sampler = makeNode(2, {
+      type: 'KSampler',
+      inputs: [{ name: 'model', type: 'MODEL', link: 10 }]
+    });
+    const positive = makeNode(3, {
+      type: 'CLIPTextEncode',
+      inputs: [{ name: 'clip', type: 'CLIP', link: 11 }]
+    });
+    const negative = makeNode(4, {
+      type: 'CLIPTextEncode',
+      inputs: [{ name: 'clip', type: 'CLIP', link: 12 }]
+    });
+    useWorkflowStore.setState({
+      workflow: makeWorkflow([checkpoint, sampler, positive, negative], [
+        [10, 1, 0, 2, 0, 'MODEL'],
+        [11, 1, 1, 3, 0, 'CLIP'],
+        [12, 1, 1, 4, 0, 'CLIP']
+      ]),
+      nodeTypes: loraNodeTypes,
+      ...rootNodeStableRegistry([1, 2, 3, 4]),
+      mobileLayout: {
+        root: [{ type: 'node', id: 1 }, { type: 'node', id: 2 }, { type: 'node', id: 3 }, { type: 'node', id: 4 }],
+        groups: {},
+        subgraphs: {},
+        hiddenBlocks: {}
+      }
+    });
+
+    const newId = useWorkflowStore.getState().insertLoraNodeDynamic(rootNodeHierarchicalKey(2));
+    const next = useWorkflowStore.getState();
+    const lora = next.workflow?.nodes.find((node) => node.id === newId);
+
+    expect(newId).toBe(5);
+    expect(lora?.type).toBe('LoraLoader');
+    expect(lora?.widgets_values).toEqual(['example.safetensors', 1, 1]);
+    expect(lora?.inputs.map((input) => input.link)).toEqual([13, 14]);
+    expect(lora?.outputs[0]?.links).toEqual([10]);
+    expect(lora?.outputs[1]?.links).toEqual([11, 12]);
+    expect(next.workflow?.links).toEqual([
+      [10, 5, 0, 2, 0, 'MODEL'],
+      [11, 5, 1, 3, 0, 'CLIP'],
+      [12, 5, 1, 4, 0, 'CLIP'],
+      [13, 1, 0, 5, 0, 'MODEL'],
+      [14, 1, 1, 5, 1, 'CLIP']
+    ]);
+    expect(next.workflow?.nodes.find((node) => node.id === 1)?.outputs[0]?.links).toEqual([13]);
+    expect(next.workflow?.nodes.find((node) => node.id === 1)?.outputs[1]?.links).toEqual([14]);
+    expect(flattenLayoutToNodeOrder(next.mobileLayout)).toEqual([1, 5, 2, 3, 4]);
+  });
+
+  it('insertLoraNodeDynamic inserts after an existing LoraLoader when one is present', () => {
+    const checkpoint = makeNode(1, {
+      type: 'CheckpointLoaderSimple',
+      outputs: [
+        { name: 'MODEL', type: 'MODEL', links: [10] },
+        { name: 'CLIP', type: 'CLIP', links: [11] }
+      ]
+    });
+    const loraA = makeNode(2, {
+      type: 'LoraLoader',
+      inputs: [
+        { name: 'model', type: 'MODEL', link: 10 },
+        { name: 'clip', type: 'CLIP', link: 11 }
+      ],
+      outputs: [
+        { name: 'MODEL', type: 'MODEL', links: [12] },
+        { name: 'CLIP', type: 'CLIP', links: [13] }
+      ],
+      widgets_values: ['first.safetensors', 1, 1]
+    });
+    const sampler = makeNode(3, { type: 'KSampler', inputs: [{ name: 'model', type: 'MODEL', link: 12 }] });
+    const text = makeNode(4, { type: 'CLIPTextEncode', inputs: [{ name: 'clip', type: 'CLIP', link: 13 }] });
+    useWorkflowStore.setState({
+      workflow: makeWorkflow([checkpoint, loraA, sampler, text], [
+        [10, 1, 0, 2, 0, 'MODEL'],
+        [11, 1, 1, 2, 1, 'CLIP'],
+        [12, 2, 0, 3, 0, 'MODEL'],
+        [13, 2, 1, 4, 0, 'CLIP']
+      ]),
+      nodeTypes: loraNodeTypes,
+      ...rootNodeStableRegistry([1, 2, 3, 4]),
+      mobileLayout: {
+        root: [{ type: 'node', id: 1 }, { type: 'node', id: 2 }, { type: 'node', id: 3 }, { type: 'node', id: 4 }],
+        groups: {},
+        subgraphs: {},
+        hiddenBlocks: {}
+      }
+    });
+
+    const newId = useWorkflowStore.getState().insertLoraNodeDynamic(rootNodeHierarchicalKey(1));
+    const next = useWorkflowStore.getState();
+
+    expect(newId).toBe(5);
+    expect(next.workflow?.links).toEqual([
+      [10, 1, 0, 2, 0, 'MODEL'],
+      [11, 1, 1, 2, 1, 'CLIP'],
+      [12, 5, 0, 3, 0, 'MODEL'],
+      [13, 5, 1, 4, 0, 'CLIP'],
+      [14, 2, 0, 5, 0, 'MODEL'],
+      [15, 2, 1, 5, 1, 'CLIP']
+    ]);
+    expect(next.workflow?.nodes.find((node) => node.id === 2)?.outputs[0]?.links).toEqual([14]);
+    expect(next.workflow?.nodes.find((node) => node.id === 2)?.outputs[1]?.links).toEqual([15]);
+    expect(flattenLayoutToNodeOrder(next.mobileLayout)).toEqual([1, 2, 5, 3, 4]);
   });
 
   it('connectNodes replaces existing input link and cleans old source output list', () => {

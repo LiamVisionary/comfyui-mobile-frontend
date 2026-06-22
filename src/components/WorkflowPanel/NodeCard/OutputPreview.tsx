@@ -1,4 +1,5 @@
-import { getImageUrl } from '@/api/client';
+import { getImageUrl, getPreviewUrl } from '@/api/client';
+import { ProgressiveImage } from '@/components/ProgressiveImage';
 
 interface NodeCardOutputPreviewProps {
   show: boolean;
@@ -25,26 +26,46 @@ export function NodeCardOutputPreview({
 }: NodeCardOutputPreviewProps) {
   if (!show || (!previewImage && !previewText && !latentPreviewUrl)) return null;
 
-  const displaySrc = previewImage
+  const fullSrc = previewImage
     ? getImageUrl(previewImage.filename, previewImage.subfolder, previewImage.type)
     : latentPreviewUrl;
+  const previewSrc = previewImage?.type === 'output'
+    ? getPreviewUrl(previewImage.filename, previewImage.subfolder, previewImage.type)
+    : undefined;
+  const displaySrc = previewSrc || fullSrc;
 
   return (
-    <div className="mb-3">
+    <div className="mb-3" data-output-preview="true">
       <div className="text-xs text-gray-500 mb-1.5 uppercase tracking-wide">
         Output Preview
       </div>
-      {displaySrc && (
+          {displaySrc && fullSrc && (
         <div className="relative">
-          <img
-            key={previewImage ? 'preview' : 'latent'}
-            src={displaySrc}
-            alt={`${displayName} output`}
-            className="w-full h-auto rounded-lg border border-gray-100"
-            loading="lazy"
-            onClick={onImageClick}
-          />
-          {isExecuting && overallProgress !== null && (
+          {previewImage ? (
+            <ProgressiveImage
+              fullSrc={fullSrc}
+              previewSrc={previewSrc}
+              alt={`${displayName} output`}
+              className="w-full h-auto rounded-lg border border-gray-100"
+              loading="eager"
+              decoding="async"
+              fetchPriority="high"
+              loadFull={false}
+              onClick={onImageClick}
+            />
+          ) : (
+            <img
+              key="latent"
+              src={displaySrc}
+              alt={`${displayName} output`}
+              className="w-full h-auto rounded-lg border border-gray-100"
+              loading="eager"
+              decoding="async"
+              fetchPriority="auto"
+              onClick={onImageClick}
+            />
+          )}
+          {isExecuting && overallProgress !== null && overallProgress < 100 && (
             <div className="absolute inset-0 bg-black/40 rounded-lg flex items-end p-3">
               <div className="w-full">
                 <div className="flex items-center justify-between text-xs text-white/90 mb-1">

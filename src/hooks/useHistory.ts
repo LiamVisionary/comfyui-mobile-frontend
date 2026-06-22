@@ -3,6 +3,7 @@ import * as api from '@/api/client';
 import type { HistoryOutputImage, Workflow } from '@/api/types';
 import { useWorkflowStore, getWorkflowSignature } from '@/hooks/useWorkflow';
 import { useQueueStore } from '@/hooks/useQueue';
+import { decryptWorkflowFromStorage } from '@/utils/workflowEncryption';
 
 export interface HistoryEntry {
   prompt_id: string;
@@ -35,9 +36,29 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
 
   addHistoryEntry: (entry) => {
     set((state) => {
-      // Check if exists
-      if (state.history.some(h => h.prompt_id === entry.prompt_id)) {
-        return state;
+      const existingIndex = state.history.findIndex(h => h.prompt_id === entry.prompt_id);
+      if (existingIndex !== -1) {
+        const existing = state.history[existingIndex];
+        const seen = new Set(existing.outputs.images.map((img) => `${img.type}/${img.subfolder}/${img.filename}`));
+        const mergedImages = [...existing.outputs.images];
+        for (const img of entry.outputs.images) {
+          const key = `${img.type}/${img.subfolder}/${img.filename}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            mergedImages.push(img);
+          }
+        }
+        const merged = {
+          ...existing,
+          ...entry,
+          outputs: { images: mergedImages },
+          prompt: Object.keys(entry.prompt ?? {}).length ? entry.prompt : existing.prompt,
+          workflow: entry.workflow ?? existing.workflow,
+          durationSeconds: entry.durationSeconds ?? existing.durationSeconds,
+        };
+        const nextHistory = [...state.history];
+        nextHistory.splice(existingIndex, 1);
+        return { history: [merged, ...nextHistory] };
       }
       // Add to top
       return { history: [entry, ...state.history] };
@@ -82,7 +103,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
         return null;
       };
 
-      const entries: HistoryEntry[] = Object.entries(data).map(([prompt_id, item]) => {
+      const entries: HistoryEntry[] = await Promise.all(Object.entries(data).map(async ([prompt_id, item]) => {
         // Collect all images from all output nodes
         const images: HistoryOutputImage[] = [];
         for (const output of Object.values(item.outputs)) {
@@ -134,7 +155,15 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
           : undefined;
         const statusStr = item.status?.status_str?.toLowerCase() || '';
         const success = !failed && item.status?.completed !== false && !statusStr.includes('error');
-        const workflow = (item.prompt?.[3] as { extra_pnginfo?: { workflow?: Workflow } } | undefined)?.extra_pnginfo?.workflow;
+        const storedWorkflow = (item.prompt?.[3] as { extra_pnginfo?: { workflow?: unknown } } | undefined)?.extra_pnginfo?.workflow;
+        let workflow: Workflow | undefined;
+        if (storedWorkflow) {
+          try {
+            workflow = await decryptWorkflowFromStorage<Workflow>(storedWorkflow);
+          } catch (err) {
+            console.warn('Could not decrypt embedded workflow metadata for history item:', prompt_id, err);
+          }
+        }
 
         return {
           prompt_id,
@@ -146,7 +175,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
           prompt: item.prompt[2] as Record<string, unknown>,
           workflow
         };
-      });
+      }));
 
       // Sort by timestamp, newest first
       entries.sort((a, b) => b.timestamp - a.timestamp);

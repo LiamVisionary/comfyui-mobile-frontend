@@ -1,4 +1,7 @@
-const DEFAULT_LORA_MANAGER_UI_PATH = "/loras";
+// Single source of truth for the Z-Image model/LoRA manager UI.
+// Use a real route instead of a hash fragment so mobile/new-tab/unlock handoff
+// cannot drop the tab target and land on Studio home.
+const DEFAULT_LORA_MANAGER_UI_PATH = "/models";
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
 function toAllowedAbsoluteUrl(value: string): string | null {

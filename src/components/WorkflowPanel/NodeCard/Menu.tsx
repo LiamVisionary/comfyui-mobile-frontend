@@ -1,12 +1,13 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BypassToggleIcon, BookmarkIconSvg, BookmarkOutlineIcon, ChevronRightIcon, EyeOffIcon, MoveUpDownIcon, NodeConnectionsIcon, EditIcon, ExternalLinkIcon, PinIconSvg, PinOutlineIcon, TrashIcon, ArrowRightIcon, WorkflowIcon } from '@/components/icons';
+import { BypassToggleIcon, BookmarkIconSvg, BookmarkOutlineIcon, ChevronRightIcon, EyeOffIcon, MoveUpDownIcon, NodeConnectionsIcon, EditIcon, ExternalLinkIcon, PinIconSvg, PinOutlineIcon, TrashIcon, ArrowRightIcon, WorkflowIcon, CopyIcon, PlusIcon } from '@/components/icons';
 import { useAnchoredMenuPosition } from '@/hooks/useAnchoredMenuPosition';
 import { useDismissOnOutsideClick } from '@/hooks/useDismissOnOutsideClick';
 import { ContextMenuButton } from '@/components/buttons/ContextMenuButton';
 import { ContextMenuBuilder } from '@/components/menus/ContextMenuBuilder';
 import { openLoraManagerUiInNewTab } from '@/utils/loraManagerUi';
 import { resolveWorkflowColor, themeColors, workflowColorPickerOptions } from '@/theme/colors';
+import { getWorkflowLoraModeLabel, type LoraExecutionMode } from '@/hooks/useWorkflow';
 
 interface PinnableWidget {
   widgetIndex: number;
@@ -19,6 +20,9 @@ interface NodeCardMenuProps {
   nodeId: number;
   nodeHierarchicalKey: string;
   isLoraManagerNode: boolean;
+  isLoraExecutionNode?: boolean;
+  loraExecutionMode?: LoraExecutionMode;
+  onSetLoraExecutionMode?: (mode: LoraExecutionMode) => void;
   showFastGroupsConfigAction: boolean;
   isBypassed: boolean;
   onEnterSubgraph?: () => void;
@@ -49,6 +53,9 @@ interface NodeCardMenuProps {
   toggleBypass: (itemKey: string) => void;
   setItemHidden: (itemKey: string, hidden: boolean) => void;
   onDeleteNode: () => void;
+  onDuplicateNode: () => void;
+  onInsertLoraNode?: () => void;
+  canInsertLoraNode?: boolean;
   onMoveNode: () => void;
   connectionHighlightMode: 'off' | 'inputs' | 'outputs' | 'both';
   setConnectionHighlightMode: (itemKey: string, mode: 'off' | 'inputs' | 'outputs' | 'both') => void;
@@ -60,6 +67,9 @@ export function NodeCardMenu({
   nodeId,
   nodeHierarchicalKey,
   isLoraManagerNode,
+  isLoraExecutionNode = false,
+  loraExecutionMode = 'fast',
+  onSetLoraExecutionMode = () => {},
   showFastGroupsConfigAction,
   isBypassed,
   onEnterSubgraph,
@@ -79,6 +89,9 @@ export function NodeCardMenu({
   toggleBypass,
   setItemHidden,
   onDeleteNode,
+  onDuplicateNode,
+  onInsertLoraNode = () => {},
+  canInsertLoraNode = false,
   onMoveNode,
   connectionHighlightMode,
   setConnectionHighlightMode,
@@ -89,6 +102,7 @@ export function NodeCardMenu({
   const [menuOpen, setMenuOpen] = useState(false);
   const [colorPopoverOpen, setColorPopoverOpen] = useState(false);
   const [pinSubmenuOpen, setPinSubmenuOpen] = useState(false);
+  const [loraModeSubmenuOpen, setLoraModeSubmenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const colorPopoverRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -107,6 +121,7 @@ export function NodeCardMenu({
     setMenuOpen(false);
     setColorPopoverOpen(false);
     setPinSubmenuOpen(false);
+    setLoraModeSubmenuOpen(false);
     resetMenuPosition();
   };
 
@@ -114,7 +129,7 @@ export function NodeCardMenu({
     open: menuOpen,
     buttonRef: menuButtonRef,
     menuRef,
-    repositionToken: pinSubmenuOpen
+    repositionToken: pinSubmenuOpen || loraModeSubmenuOpen
   });
 
   useLayoutEffect(() => {
@@ -229,7 +244,20 @@ export function NodeCardMenu({
 
   const handlePinSubmenuToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
+    setLoraModeSubmenuOpen(false);
     setPinSubmenuOpen(!pinSubmenuOpen);
+  };
+
+  const handleLoraModeSubmenuToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    setPinSubmenuOpen(false);
+    setLoraModeSubmenuOpen(!loraModeSubmenuOpen);
+  };
+
+  const handleLoraModeClick = (mode: LoraExecutionMode) => (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onSetLoraExecutionMode(mode);
+    closeMenu();
   };
 
   const handlePinWidgetClick = (widget: PinnableWidget) => (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -404,6 +432,27 @@ export function NodeCardMenu({
                 onClick: handleHideNodeClick
               },
               {
+                key: 'duplicate-node',
+                label: 'Duplicate after',
+                icon: <CopyIcon className="w-4 h-4" />,
+                onClick: (event) => {
+                  event.stopPropagation();
+                  onDuplicateNode();
+                  closeMenu();
+                }
+              },
+              {
+                key: 'insert-lora-node',
+                label: 'Insert LoRA',
+                icon: <PlusIcon className="w-4 h-4" />,
+                onClick: (event) => {
+                  event.stopPropagation();
+                  onInsertLoraNode();
+                  closeMenu();
+                },
+                hidden: !canInsertLoraNode
+              },
+              {
                 key: 'move-node',
                 label: 'Move',
                 icon: <MoveUpDownIcon className="w-4 h-4" />,
@@ -412,6 +461,37 @@ export function NodeCardMenu({
                   onMoveNode();
                   closeMenu();
                 }
+              },
+              {
+                key: 'lora-execution-mode',
+                label: getWorkflowLoraModeLabel(loraExecutionMode),
+                icon: <WorkflowIcon className="w-4 h-4" />,
+                rightSlot: (
+                  <ChevronRightIcon className={`w-4 h-4 text-gray-400 transition-transform ${loraModeSubmenuOpen ? 'rotate-90' : ''}`} />
+                ),
+                onClick: handleLoraModeSubmenuToggle,
+                hidden: !isLoraExecutionNode
+              },
+              {
+                type: 'custom',
+                key: 'lora-execution-mode-items',
+                hidden: !(isLoraExecutionNode && loraModeSubmenuOpen),
+                render: (
+                  <div className="border-t border-gray-100 bg-gray-50">
+                    {(['optimizer', 'fast', 'cached'] as LoraExecutionMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-100 ${mode === loraExecutionMode ? 'font-semibold text-blue-700' : 'text-gray-700'}`}
+                        onClick={handleLoraModeClick(mode)}
+                      >
+                        {getWorkflowLoraModeLabel(mode)}
+                      </button>
+                    ))}
+                    <div className="px-4 pb-2 text-[11px] leading-4 text-gray-500">
+                      Cached uses a saved merged LoRA when the workflow records one; otherwise it runs the fast chain instead of blocking on optimizer analysis.
+                    </div>
+                  </div>
+                )
               },
               {
                 key: 'open-lora-manager',

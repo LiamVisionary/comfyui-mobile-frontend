@@ -223,6 +223,67 @@ describe('WorkflowPanel bookmark navigation', () => {
     expect(scrollToNode).toHaveBeenCalledWith(innerNodeKey, undefined);
   });
 
+  it('marks workflow node lists with responsive desktop grid classes', async () => {
+    const firstNode = makeNode(1, { type: 'FirstNode' });
+    const secondNode = makeNode(2, { type: 'SecondNode' });
+    const workflow: Workflow = {
+      id: 'desktop-grid-test',
+      last_node_id: 2,
+      last_link_id: 0,
+      nodes: [firstNode, secondNode],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    useWorkflowStore.setState({
+      workflow,
+      nodeTypes: {
+        FirstNode: {
+          input: { required: {} },
+          output: [],
+          name: 'FirstNode',
+          display_name: 'First Node',
+          description: '',
+          python_module: '',
+          category: 'test',
+        },
+        SecondNode: {
+          input: { required: {} },
+          output: [],
+          name: 'SecondNode',
+          display_name: 'Second Node',
+          description: '',
+          python_module: '',
+          category: 'test',
+        },
+      },
+      mobileLayout: {
+        root: [{ type: 'node', id: 1 }, { type: 'node', id: 2 }],
+        groups: {},
+        groupParents: {},
+        subgraphs: {},
+        hiddenBlocks: {},
+      },
+      itemKeyByPointer: {
+        [makeLocationPointer({ type: 'node', nodeId: 1, subgraphId: null })]: makeLocationPointer({ type: 'node', nodeId: 1, subgraphId: null }),
+        [makeLocationPointer({ type: 'node', nodeId: 2, subgraphId: null })]: makeLocationPointer({ type: 'node', nodeId: 2, subgraphId: null }),
+      },
+      pointerByHierarchicalKey: {
+        [makeLocationPointer({ type: 'node', nodeId: 1, subgraphId: null })]: makeLocationPointer({ type: 'node', nodeId: 1, subgraphId: null }),
+        [makeLocationPointer({ type: 'node', nodeId: 2, subgraphId: null })]: makeLocationPointer({ type: 'node', nodeId: 2, subgraphId: null }),
+      },
+    });
+
+    await act(async () => {
+      root.render(<WorkflowPanel visible={true} />);
+    });
+
+    expect(container.querySelector('#node-list-inner')?.classList.contains('workflow-node-grid')).toBe(true);
+    expect(container.querySelector('#node-list-container')?.classList.contains('workflow-desktop-canvas')).toBe(true);
+  });
+
   it('navigates to the correct bookmark when root and subgraph nodes share the same id', async () => {
     const rootNodeKey = makeLocationPointer({ type: 'node', nodeId: 958, subgraphId: null });
     const innerNodeKey = makeLocationPointer({ type: 'node', nodeId: 958, subgraphId: 'sg-a' });

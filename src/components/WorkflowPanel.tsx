@@ -1302,6 +1302,43 @@ export function WorkflowPanel({
   }, [setItemCollapsed, scrollToNode, workflow]);
 
   useEffect(() => {
+    const handleScrollToOutput = (event: Event) => {
+      const detail = (event as CustomEvent).detail ?? {};
+      const itemKey = typeof detail.itemKey === "string" ? detail.itemKey : null;
+      const nodeId = typeof detail.nodeId === "number" ? detail.nodeId : null;
+      if (!itemKey && nodeId === null) return;
+
+      if (itemKey) {
+        revealNodeWithParents(itemKey);
+        setItemCollapsed(itemKey, false);
+      }
+
+      const safeItemKey = itemKey?.replace(/\\/g, "\\\\").replace(/\"/g, '\\\"');
+      const cardSelector = safeItemKey
+        ? `[data-item-key="${safeItemKey}"]`
+        : `[data-reposition-item="node-${nodeId}"]`;
+
+      window.setTimeout(() => {
+        requestAnimationFrame(() => {
+          const card = document.querySelector(cardSelector);
+          const preview = card?.querySelector('[data-output-preview="true"]') ?? card;
+          preview?.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+      }, 150);
+    };
+
+    window.addEventListener(
+      "workflow-scroll-to-output",
+      handleScrollToOutput as EventListener,
+    );
+    return () =>
+      window.removeEventListener(
+        "workflow-scroll-to-output",
+        handleScrollToOutput as EventListener,
+      );
+  }, [revealNodeWithParents, setItemCollapsed]);
+
+  useEffect(() => {
     const handleFollowExecutingNode = () => {
       followExecutingNodeRef.current = true;
       scrollToExecutingNode();
@@ -1739,7 +1776,9 @@ export function WorkflowPanel({
                   </div>
                 )}
                 {hasVisibleChildren ? (
-                  renderItems(item.children, keyBase)
+                  <div className="workflow-group-children workflow-node-grid workflow-node-grid--nested">
+                    {renderItems(item.children, keyBase)}
+                  </div>
                 ) : !searchActive || matchingGroupIds.has(item.group.id) ? (
                   <GraphContainerPlaceholder
                     containerType="group"
@@ -1896,7 +1935,7 @@ export function WorkflowPanel({
         <div
           id="node-list-container"
           ref={parentRef}
-          className="flex-1 overflow-auto px-4 pt-4 overscroll-contain scroll-container"
+          className="workflow-desktop-canvas flex-1 overflow-auto px-4 pt-4 overscroll-contain scroll-container"
           style={{ paddingBottom: "10rem" }}
           data-node-list="true"
         >
@@ -1908,7 +1947,7 @@ export function WorkflowPanel({
               </div>
             </div>
           ) : (
-            <div id="node-list-inner">{renderItems(nestedItems, "root")}</div>
+            <div id="node-list-inner" className="workflow-node-grid workflow-node-grid--root">{renderItems(nestedItems, "root")}</div>
           )}
         </div>
       </div>

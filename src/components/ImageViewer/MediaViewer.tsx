@@ -10,6 +10,7 @@ import { extractMetadata } from '@/utils/metadata';
 import { isVideoFilename } from '@/utils/media';
 import { getFileWorkflowAvailability, getImageMetadata } from '@/api/client';
 import { resolveFilePath, resolveFileSource } from '@/utils/workflowOperations';
+import { downloadImage, saveImageToFiles } from '@/utils/downloads';
 
 interface MediaViewerProps {
   open: boolean;
@@ -20,6 +21,7 @@ interface MediaViewerProps {
   onDelete: (item: ViewerImage) => void;
   onLoadWorkflow: (item: ViewerImage) => void;
   onLoadInWorkflow: (item: ViewerImage) => void;
+  onFavoriteWorkflow?: (item: ViewerImage) => void;
   showMetadataToggle?: boolean;
   showLoadingPlaceholder?: boolean;
   loadingProgress?: number;
@@ -34,6 +36,41 @@ const DEFAULT_TRANSLATE = { x: 0, y: 0 };
 const MEDIA_VIEWER_Z_INDEX = 2100;
 const MEDIA_VIEWER_OVERLAY_Z_INDEX = MEDIA_VIEWER_Z_INDEX + 10;
 const workflowAvailabilityCache = new Map<string, boolean>();
+const IMAGE_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
+const preloadedImageCache = new Map<string, { expiresAt: number; loaded: boolean; promise?: Promise<void> }>();
+
+function getCachedImage(src: string): { expiresAt: number; loaded: boolean; promise?: Promise<void> } | null {
+  const cached = preloadedImageCache.get(src);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    preloadedImageCache.delete(src);
+    return null;
+  }
+  return cached;
+}
+
+function preloadImage(src: string): Promise<void> {
+  const cached = getCachedImage(src);
+  if (cached?.loaded) return Promise.resolve();
+  if (cached?.promise) return cached.promise;
+
+  const promise = new Promise<void>((resolve, reject) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      preloadedImageCache.set(src, { expiresAt: Date.now() + IMAGE_CACHE_TTL_MS, loaded: true });
+      resolve();
+    };
+    img.onerror = () => {
+      preloadedImageCache.delete(src);
+      reject(new Error('Image preload failed'));
+    };
+    img.src = src;
+  });
+
+  preloadedImageCache.set(src, { expiresAt: Date.now() + IMAGE_CACHE_TTL_MS, loaded: false, promise });
+  return promise;
+}
 
 function makeWorkflowAvailabilityCacheKey(source: string, path: string): string {
   return `${source}:${path}`;
@@ -48,6 +85,7 @@ export function MediaViewer({
   onDelete,
   onLoadWorkflow,
   onLoadInWorkflow,
+  onFavoriteWorkflow,
   showMetadataToggle = false,
   showLoadingPlaceholder = false,
   loadingProgress = 0,
@@ -88,6 +126,7 @@ export function MediaViewer({
   const [workflowAvailableById, setWorkflowAvailableById] = useState<Record<string, boolean>>({});
   const [workflowLoadingById, setWorkflowLoadingById] = useState<Record<string, boolean>>({});
   const [videoError, setVideoError] = useState(false);
+  const [currentImageLoaded, setCurrentImageLoaded] = useState(false);
   const { isInputFocused } = useTextareaFocus();
 
   const currentItem = index >= 0 ? (items[index] ?? items[0] ?? null) : null;
@@ -110,6 +149,7 @@ export function MediaViewer({
   const canLoadWorkflow = !isVideo
     || Boolean(currentItem?.workflow)
     || (fileId ? Boolean(workflowAvailableById[fileId]) : false);
+  const showImageLoadingOverlay = Boolean(currentItem && !isVideo && !currentImageLoaded);
 
   const resetIdleTimer = useCallback(() => {
     setIsIdle(false);
@@ -143,6 +183,24 @@ export function MediaViewer({
     resetIdleTimer();
     onLoadInWorkflow(currentItem);
   }, [currentItem, onLoadInWorkflow, resetIdleTimer]);
+
+  const handleFavoriteWorkflowClick = useCallback(() => {
+    if (!currentItem || !onFavoriteWorkflow) return;
+    resetIdleTimer();
+    onFavoriteWorkflow(currentItem);
+  }, [currentItem, onFavoriteWorkflow, resetIdleTimer]);
+
+  const handleSaveToAlbumClick = useCallback(() => {
+    if (!currentItem) return;
+    resetIdleTimer();
+    void downloadImage(currentItem.src, currentItem.filename ?? currentItem.file?.name ?? 'image.png');
+  }, [currentItem, resetIdleTimer]);
+
+  const handleSaveToFilesClick = useCallback(() => {
+    if (!currentItem) return;
+    resetIdleTimer();
+    void saveImageToFiles(currentItem.src, currentItem.filename ?? currentItem.file?.name ?? 'image.png');
+  }, [currentItem, resetIdleTimer]);
 
   useEffect(() => {
     if (open) {
@@ -227,8 +285,31 @@ export function MediaViewer({
     naturalSizeRef.current = null;
     setBaseSize(null);
     setVideoError(false);
-  }, [currentItem?.src]);
+    if (!currentItem?.src || isVideo) {
+      setCurrentImageLoaded(false);
+      return;
+    }
+    const cached = getCachedImage(currentItem.src);
+    setCurrentImageLoaded(Boolean(cached?.loaded));
+    if (!cached?.loaded && currentItem?.src) {
+      void preloadImage(currentItem.src).then(() => {
+        if (imageRef.current?.src === currentItem.src) {
+          setCurrentImageLoaded(true);
+        }
+      }).catch(() => undefined);
+    }
+  }, [currentItem?.src, isVideo]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    if (!open || !currentItem || isVideo) return;
+    const nextItems = [currentItem, items[index + 1], items[index + 2]].filter(
+      (item): item is ViewerImage => Boolean(item && item.src && item.mediaType !== 'video' && item.file?.type !== 'video'),
+    );
+    for (const item of nextItems) {
+      preloadImage(item.src).catch(() => undefined);
+    }
+  }, [open, currentItem, isVideo, items, index]);
 
   useEffect(() => {
     if (!open) return;
@@ -364,6 +445,8 @@ export function MediaViewer({
 
   const handleImageLoad = (event: React.SyntheticEvent<HTMLImageElement>) => {
     const img = event.currentTarget;
+    preloadedImageCache.set(img.currentSrc || img.src, { expiresAt: Date.now() + IMAGE_CACHE_TTL_MS, loaded: true });
+    setCurrentImageLoaded(true);
     naturalSizeRef.current = { width: img.naturalWidth, height: img.naturalHeight };
     const container = containerRef.current;
     if (!container || img.naturalWidth === 0) return;
@@ -631,6 +714,12 @@ export function MediaViewer({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       >
+        {showImageLoadingOverlay && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-white bg-black z-10 pointer-events-none">
+            <div className="w-12 h-12 border-4 border-gray-600 border-t-white rounded-full animate-spin" />
+            <div className="mt-3 text-sm text-gray-300">Loading image…</div>
+          </div>
+        )}
         {showLoadingPlaceholder ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-white">
             <div className="w-12 h-12 border-4 border-gray-600 border-t-white rounded-full animate-spin" />
@@ -671,10 +760,14 @@ export function MediaViewer({
                 ref={imageRef}
                 src={currentItem.src}
                 alt={currentItem.alt || 'Generation'}
-                className="w-full h-auto block select-none relative"
+                className="w-full h-auto block select-none relative transition-opacity duration-150"
                 draggable={false}
+                fetchPriority="high"
+                loading="eager"
+                decoding="async"
                 onLoad={handleImageLoad}
                 style={{
+                  opacity: currentImageLoaded ? 1 : 0,
                   transform: `translate3d(${getBaseOffset(scale).x + translate.x}px, ${getBaseOffset(scale).y + translate.y}px, 0) scale(${scale})`,
                   transformOrigin: 'top left',
                   willChange: 'transform',
@@ -716,7 +809,10 @@ export function MediaViewer({
               onDelete={handleDeleteClick}
               onLoadWorkflow={handleLoadWorkflowClick}
               onUseInWorkflow={handleLoadInWorkflowClick}
+              onFavoriteWorkflow={onFavoriteWorkflow ? handleFavoriteWorkflowClick : undefined}
               onToggleMetadata={handleToggleMetadata}
+              onSaveToAlbum={handleSaveToAlbumClick}
+              onSaveToFiles={handleSaveToFilesClick}
             />
             <MediaViewerMetadata
               isVideo={isVideo}

@@ -41,7 +41,11 @@ export function dedupeKey(entry: {
     case "template":
       return `template:${entry.source.moduleName}/${entry.source.templateName}`;
     case "history":
-      return `history:${entry.source.promptId}`;
+      return favoriteGroupKeyFromRecentEntry(entry)
+        ? `favorite:${favoriteGroupKeyFromRecentEntry(entry)}`
+        : `history:${entry.source.promptId}`;
+    case "favorite":
+      return `favorite:${entry.source.groupKey}`;
     case "file":
       return `file:${entry.source.assetSource}:${entry.source.filePath}`;
     case "other":
@@ -49,6 +53,34 @@ export function dedupeKey(entry: {
     default:
       return `other:${entry.filename}`;
   }
+}
+
+/** @internal exported for testing */
+export function favoriteGroupKeyFromRecentEntry(entry: {
+  filename: string;
+  source: WorkflowSource | null;
+}): string | null {
+  if (entry.source?.type === "favorite") return entry.source.groupKey;
+  if (
+    entry.source?.type === "history" &&
+    entry.filename.startsWith("favorite-") &&
+    entry.filename.endsWith(".json") &&
+    entry.source.promptId.includes(":")
+  ) {
+    return entry.source.promptId;
+  }
+  return null;
+}
+
+/** @internal exported for testing */
+export function isRecentEntryReloadable(entry: RecentWorkflowEntry): boolean {
+  if (!entry.source) return false;
+  return (
+    entry.source.type === "user" ||
+    entry.source.type === "template" ||
+    entry.source.type === "file" ||
+    Boolean(favoriteGroupKeyFromRecentEntry(entry))
+  );
 }
 
 /** @internal exported for testing */
@@ -156,8 +188,15 @@ function scheduleServerSync() {
   }, 5000);
 }
 
-// Pull from server once on startup after hydration
-const unsub = useRecentWorkflowsStore.persist.onFinishHydration(() => {
-  unsub();
-  useRecentWorkflowsStore.getState().syncFromServer();
-});
+// Pull from server once on startup after hydration. If this module is imported
+// after persist hydration already completed (common for lazy menu panels), run
+// the sync immediately; otherwise the Recent panel can stay empty forever on a
+// fresh browser/origin even though server-side recent_workflows.json exists.
+if (useRecentWorkflowsStore.persist.hasHydrated()) {
+  void useRecentWorkflowsStore.getState().syncFromServer();
+} else {
+  const unsub = useRecentWorkflowsStore.persist.onFinishHydration(() => {
+    unsub();
+    useRecentWorkflowsStore.getState().syncFromServer();
+  });
+}

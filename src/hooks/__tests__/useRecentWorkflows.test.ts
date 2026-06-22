@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   dedupeKey,
+  favoriteGroupKeyFromRecentEntry,
+  isRecentEntryReloadable,
   isValidEntry,
   mergeEntries,
   MAX_RECENT_ENTRIES,
@@ -32,6 +34,11 @@ describe('dedupeKey', () => {
       .toBe('history:p-1');
   });
 
+  it('returns favorite key for favorite workflow source', () => {
+    expect(dedupeKey({ filename: 'favorite-abc:def.json', source: { type: 'favorite', groupKey: 'abc:def' } }))
+      .toBe('favorite:abc:def');
+  });
+
   it('returns file key for file source', () => {
     expect(dedupeKey({ filename: 'x', source: { type: 'file', filePath: 'sub/img.png', assetSource: 'output' } }))
       .toBe('file:output:sub/img.png');
@@ -51,6 +58,37 @@ describe('dedupeKey', () => {
     const bogus = { type: 'bogus' } as unknown as WorkflowSource;
     expect(dedupeKey({ filename: 'bar.json', source: bogus }))
       .toBe('other:bar.json');
+  });
+});
+
+describe('favoriteGroupKeyFromRecentEntry', () => {
+  it('reads explicit favorite source group keys', () => {
+    const entry = makeEntry('favorite-abc:def.json', { type: 'favorite', groupKey: 'abc:def' }, 1000);
+    expect(favoriteGroupKeyFromRecentEntry(entry)).toBe('abc:def');
+  });
+
+  it('treats existing favorite history recent entries as favorite reload shortcuts', () => {
+    const entry = makeEntry('favorite-abc:def.json', { type: 'history', promptId: 'abc:def' }, 1000);
+    expect(favoriteGroupKeyFromRecentEntry(entry)).toBe('abc:def');
+  });
+
+  it('ignores normal history entries', () => {
+    const entry = makeEntry('history-prompt.json', { type: 'history', promptId: 'prompt-1' }, 1000);
+    expect(favoriteGroupKeyFromRecentEntry(entry)).toBeNull();
+  });
+});
+
+describe('isRecentEntryReloadable', () => {
+  it('allows user, template, file, and favorite workflow sources', () => {
+    expect(isRecentEntryReloadable(makeEntry('user.json', { type: 'user', filename: 'user.json' }))).toBe(true);
+    expect(isRecentEntryReloadable(makeEntry('template.json', { type: 'template', moduleName: 'm', templateName: 't' }))).toBe(true);
+    expect(isRecentEntryReloadable(makeEntry('file.png', { type: 'file', filePath: 'file.png', assetSource: 'output' }))).toBe(true);
+    expect(isRecentEntryReloadable(makeEntry('favorite-abc:def.json', { type: 'favorite', groupKey: 'abc:def' }))).toBe(true);
+  });
+
+  it('allows legacy favorite history entries but not normal history entries', () => {
+    expect(isRecentEntryReloadable(makeEntry('favorite-abc:def.json', { type: 'history', promptId: 'abc:def' }))).toBe(true);
+    expect(isRecentEntryReloadable(makeEntry('history-prompt.json', { type: 'history', promptId: 'prompt-1' }))).toBe(false);
   });
 });
 

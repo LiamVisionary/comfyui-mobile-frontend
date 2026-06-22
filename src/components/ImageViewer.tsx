@@ -9,7 +9,8 @@ import { useHistoryStore } from '@/hooks/useHistory';
 import { useOverallProgress } from '@/hooks/useOverallProgress';
 import { useHistoryWorkflowByFileId } from '@/hooks/useHistoryWorkflowByFileId';
 import { buildViewerImages, type ViewerImage } from '@/utils/viewerImages';
-import { deleteFile, type FileItem } from '@/api/client';
+import { getImageUrl, deleteFile, saveWorkflowFavorite, type FileItem } from '@/api/client';
+import { getMediaType } from '@/utils/media';
 import { Dialog } from '@/components/modals/Dialog';
 import { UseImageModal } from '@/components/modals/UseImageModal';
 import {
@@ -18,6 +19,7 @@ import {
   resolveFileSource,
   resolveViewerItemWorkflowLoad,
 } from '@/utils/workflowOperations';
+import { buildWorkflowFavoriteRecord } from '@/utils/workflowFavorites';
 
 interface ImageViewerProps {
   onClose: () => void;
@@ -40,6 +42,7 @@ export function ImageViewer({ onClose }: ImageViewerProps) {
   const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
   const running = useQueueStore((s) => s.running);
   const history = useHistoryStore((s) => s.history);
+  const promptOutputs = useWorkflowStore((s) => s.promptOutputs);
   const [deleteTarget, setDeleteTarget] = useState<FileItem | null>(null);
   const [loadWorkflowTarget, setLoadWorkflowTarget] = useState<ViewerImage | null>(null);
   const [loadNodeTarget, setLoadNodeTarget] = useState<FileItem | null>(null);
@@ -78,6 +81,41 @@ export function ImageViewer({ onClose }: ImageViewerProps) {
       lastFollowPromptRef.current = history[0]?.prompt_id ?? null;
     }
   }, [open, followQueueActive, history]);
+
+  useEffect(() => {
+    if (!open || !followQueueActive) return;
+    const activePromptId = executingPromptId || running[0]?.prompt_id || null;
+    if (!activePromptId) return;
+    const liveOutputs = promptOutputs[activePromptId] ?? [];
+    const liveImages = liveOutputs.filter((img) => img.type === 'output');
+    if (liveImages.length === 0) return;
+
+    const nextImages: ViewerImage[] = liveImages.map((img) => {
+      const filePath = img.subfolder ? `${img.subfolder}/${img.filename}` : img.filename;
+      const mediaType = getMediaType(img.filename);
+      return {
+        src: getImageUrl(img.filename, img.subfolder, img.type),
+        alt: 'Generation',
+        mediaType,
+        promptId: activePromptId,
+        filename: img.filename,
+        file: {
+          id: `${img.type}/${filePath}`,
+          name: img.filename,
+          type: mediaType === 'video' ? 'video' : 'image',
+          fullUrl: getImageUrl(img.filename, img.subfolder, img.type),
+        },
+      };
+    });
+
+    lastFollowPromptRef.current = activePromptId;
+    setViewerState({
+      viewerImages: nextImages,
+      viewerIndex: 0,
+      viewerScale: 1,
+      viewerTranslate: { x: 0, y: 0 },
+    });
+  }, [open, followQueueActive, executingPromptId, running, promptOutputs, setViewerState]);
 
   useEffect(() => {
     if (!open || !followQueueActive) return;
@@ -189,6 +227,30 @@ export function ImageViewer({ onClose }: ImageViewerProps) {
     setLoadNodeOpen(true);
   };
 
+  const handleFavoriteWorkflow = async (item: ViewerImage) => {
+    if (!item.file) return;
+    const historyEntry = item.promptId ? history.find((entry) => entry.prompt_id === item.promptId) : undefined;
+    const workflowToSave = item.workflow ?? historyEntry?.workflow;
+    if (!workflowToSave) {
+      window.alert('No workflow metadata available for this image.');
+      return;
+    }
+    try {
+      const record = await buildWorkflowFavoriteRecord({
+        workflow: workflowToSave,
+        prompt: historyEntry?.prompt,
+        file: item.file,
+        src: item.src,
+        promptId: item.promptId,
+      });
+      await saveWorkflowFavorite(record);
+      if ('vibrate' in navigator) navigator.vibrate(10);
+    } catch (err) {
+      console.error('Failed to favorite workflow:', err);
+      window.alert('Failed to save favorite workflow shortcut.');
+    }
+  };
+
   const handleLoadNodeClose = () => {
     setLoadNodeOpen(false);
     setLoadNodeTarget(null);
@@ -213,6 +275,7 @@ export function ImageViewer({ onClose }: ImageViewerProps) {
         onDelete={handleDeleteRequest}
         onLoadWorkflow={handleLoadWorkflowRequest}
         onLoadInWorkflow={handleLoadInWorkflow}
+        onFavoriteWorkflow={handleFavoriteWorkflow}
         showMetadataToggle
         showLoadingPlaceholder={showLoadingPlaceholder}
         loadingProgress={displayProgress}

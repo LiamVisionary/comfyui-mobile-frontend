@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { WorkflowIcon, TemplateIcon, ClockIcon, DocumentIcon } from '@/components/icons';
 import { MenuSubPageHeader } from './MenuSubPageHeader';
-import { useRecentWorkflowsStore, type RecentWorkflowEntry } from '@/hooks/useRecentWorkflows';
+import { useRecentWorkflowsStore, dedupeKey, favoriteGroupKeyFromRecentEntry, isRecentEntryReloadable, type RecentWorkflowEntry } from '@/hooks/useRecentWorkflows';
 import { getDisplayName } from './userWorkflowHelpers';
 import { formatRelativeDate } from './formatRelativeDate';
 import { getFileWorkflowAvailability } from '@/api/client';
@@ -11,6 +11,7 @@ interface RecentWorkflowsPanelProps {
   onLoadUserWorkflow: (filename: string) => void;
   onLoadTemplate: (moduleName: string, templateName: string) => void;
   onLoadFileWorkflow: (filePath: string, assetSource: 'output' | 'input' | 'temp') => void;
+  onLoadFavoriteWorkflow: (groupKey: string) => void;
 }
 
 function getSourceLabel(entry: RecentWorkflowEntry): string | null {
@@ -18,7 +19,8 @@ function getSourceLabel(entry: RecentWorkflowEntry): string | null {
   switch (entry.source.type) {
     case 'user': return null;
     case 'template': return 'Template';
-    case 'history': return 'History';
+    case 'history': return favoriteGroupKeyFromRecentEntry(entry) ? 'Favorite' : 'History';
+    case 'favorite': return 'Favorite';
     case 'file':
       switch (entry.source.assetSource) {
         case 'input': return 'Input';
@@ -27,11 +29,6 @@ function getSourceLabel(entry: RecentWorkflowEntry): string | null {
       }
     case 'other': return null;
   }
-}
-
-function isReloadable(entry: RecentWorkflowEntry): boolean {
-  if (!entry.source) return false;
-  return entry.source.type === 'user' || entry.source.type === 'template' || entry.source.type === 'file';
 }
 
 function getEntryDisplayName(entry: RecentWorkflowEntry): string {
@@ -54,12 +51,18 @@ export function RecentWorkflowsPanel({
   onLoadUserWorkflow,
   onLoadTemplate,
   onLoadFileWorkflow,
+  onLoadFavoriteWorkflow,
 }: RecentWorkflowsPanelProps) {
   const entries = useRecentWorkflowsStore((s) => s.entries);
   const clearEntries = useRecentWorkflowsStore((s) => s.clearEntries);
+  const syncFromServer = useRecentWorkflowsStore((s) => s.syncFromServer);
+
+  useEffect(() => {
+    void syncFromServer();
+  }, [syncFromServer]);
 
   // Track which file-source entries are unavailable (file deleted/missing)
-  const [unavailable, setUnavailable] = useState<Set<number>>(new Set());
+  const [unavailableKeys, setUnavailableKeys] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -70,25 +73,25 @@ export function RecentWorkflowsPanel({
 
       if (fileEntries.length === 0) {
         if (!cancelled) {
-          setUnavailable(new Set());
+          setUnavailableKeys(new Set());
         }
         return;
       }
 
       const results = await Promise.all(
-        fileEntries.map(async ({ entry, index }) => {
+        fileEntries.map(async ({ entry }) => {
           if (entry.source?.type !== 'file') return null;
           try {
             const available = await getFileWorkflowAvailability(entry.source.filePath, entry.source.assetSource);
-            return available ? null : index;
+            return available ? null : dedupeKey(entry);
           } catch {
-            return index;
+            return dedupeKey(entry);
           }
         }),
       );
       if (cancelled) return;
-      const missing = new Set(results.filter((i): i is number => i !== null));
-      setUnavailable(missing);
+      const missing = new Set(results.filter((key): key is string => key !== null));
+      setUnavailableKeys(missing);
     };
 
     void updateUnavailable();
@@ -97,6 +100,11 @@ export function RecentWorkflowsPanel({
   }, [entries]);
 
   const handleLoad = (entry: RecentWorkflowEntry) => {
+    const favoriteGroupKey = favoriteGroupKeyFromRecentEntry(entry);
+    if (favoriteGroupKey) {
+      onLoadFavoriteWorkflow(favoriteGroupKey);
+      return;
+    }
     if (!entry.source) return;
     switch (entry.source.type) {
       case 'user':
@@ -111,12 +119,14 @@ export function RecentWorkflowsPanel({
     }
   };
 
+  const visibleEntries = entries.filter(isRecentEntryReloadable);
+
   return (
     <div className="flex flex-col h-full">
       <MenuSubPageHeader
         title="Recent"
         onBack={onBack}
-        rightElement={entries.length > 0 ? (
+        rightElement={visibleEntries.length > 0 ? (
           <button
             onClick={clearEntries}
             className="text-xs font-semibold text-red-500"
@@ -126,15 +136,16 @@ export function RecentWorkflowsPanel({
         ) : undefined}
       />
 
-      {entries.length === 0 ? (
+      {visibleEntries.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-gray-400">
           <ClockIcon className="w-10 h-10 mb-3 text-gray-300" />
           <p className="text-sm">No recent workflows</p>
         </div>
       ) : (
         <div className="space-y-2 overflow-y-auto flex-1">
-          {entries.map((entry, i) => {
-            const reloadable = isReloadable(entry) && !unavailable.has(i);
+          {visibleEntries.map((entry, i) => {
+            const unavailableKey = dedupeKey(entry);
+            const reloadable = isRecentEntryReloadable(entry) && !unavailableKeys.has(unavailableKey);
             const sourceLabel = getSourceLabel(entry);
             const Icon = getEntryIcon(entry);
 
@@ -160,7 +171,7 @@ export function RecentWorkflowsPanel({
                         <span>{sourceLabel}</span>
                       </>
                     )}
-                    {unavailable.has(i) && (
+                    {unavailableKeys.has(unavailableKey) && (
                       <>
                         <span className="text-gray-300">&middot;</span>
                         <span className="text-red-400">File missing</span>

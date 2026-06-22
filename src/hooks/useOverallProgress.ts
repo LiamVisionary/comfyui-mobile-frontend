@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Workflow } from '@/api/types';
-import { getWorkflowSignature } from '@/hooks/useWorkflow';
+import { useQueueStore } from '@/hooks/useQueue';
+import { useWorkflowStore } from '@/hooks/useWorkflow';
 
 interface OverallProgressInput {
   workflow: Workflow | null;
@@ -9,131 +10,112 @@ interface OverallProgressInput {
   workflowDurationStats: Record<string, { avgMs: number; count: number }>;
 }
 
+const isExecutableWorkflowNode = (node: Workflow['nodes'][number]): boolean => {
+  // ComfyUI mode 4 means bypassed. Notes/reroutes/groups are not prompt nodes.
+  if (node.mode === 4) return false;
+  if (node.type === 'Note' || node.type === 'Reroute' || node.type === 'PrimitiveNode') return false;
+  return true;
+};
+
 export function useOverallProgress({
   workflow,
   runKey,
   isRunning,
   workflowDurationStats,
 }: OverallProgressInput): number | null {
-  const [percent, setPercent] = useState<number | null>(null);
-  const startTimeRef = useRef<number | null>(null);
+  const running = useQueueStore((state) => state.running);
+  const currentNodePath = useWorkflowStore((state) => state.executingNodePath);
+  const currentNodeProgress = useWorkflowStore((state) => state.progress);
+  const completedNodeIds = useWorkflowStore((state) => state.executionCompletedNodeIds);
+  const [heldComplete, setHeldComplete] = useState(false);
+  const holdTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRunKeyRef = useRef<string | null>(null);
-  const holdUntilRef = useRef<number | null>(null);
-  const pendingRunKeyRef = useRef<string | null>(null);
-  const queuedRunKeyRef = useRef<string | null>(null);
-  const lastPercentRef = useRef(0);
-  const lastEmittedRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
+  const promptNodeIds = useMemo(() => {
+    if (!runKey) return [] as string[];
+    const runningItem = running.find((item) => item.prompt_id === runKey) ?? running[0];
+    if (!runningItem?.prompt || typeof runningItem.prompt !== 'object') return [] as string[];
+    return Object.keys(runningItem.prompt);
+  }, [runKey, running]);
 
-    const update = () => {
-      if (!workflow) {
-        if (lastEmittedRef.current !== null) {
-          lastEmittedRef.current = null;
-          setPercent(null);
-        }
-        holdUntilRef.current = null;
-        pendingRunKeyRef.current = null;
-        queuedRunKeyRef.current = null;
-        startTimeRef.current = null;
-        lastPercentRef.current = 0;
-        lastRunKeyRef.current = null;
-        return;
-      }
+  const fallbackTotalNodes = useMemo(() => {
+    if (!workflow) return 0;
+    return workflow.nodes.filter(isExecutableWorkflowNode).length;
+  }, [workflow]);
 
-      const holdMs = 250;
-      const currentTime = Date.now();
-      let nextValue: number | null = null;
+  const realPercent = useMemo(() => {
+    if (!workflow || !runKey || !isRunning) return null;
 
-      if (!runKey) {
-        if (lastRunKeyRef.current) {
-          holdUntilRef.current = currentTime + holdMs;
-          lastRunKeyRef.current = null;
-          lastPercentRef.current = 100;
-          nextValue = 100;
-        } else if (holdUntilRef.current && currentTime < holdUntilRef.current) {
-          nextValue = 100;
-        } else {
-          holdUntilRef.current = null;
-          pendingRunKeyRef.current = null;
-          queuedRunKeyRef.current = null;
-          startTimeRef.current = null;
-          lastPercentRef.current = 0;
-          nextValue = null;
-        }
-      } else if (holdUntilRef.current && currentTime < holdUntilRef.current) {
-        pendingRunKeyRef.current = runKey;
-        nextValue = 100;
-      } else {
-        if (pendingRunKeyRef.current && currentTime >= (holdUntilRef.current ?? 0)) {
-          lastRunKeyRef.current = pendingRunKeyRef.current;
-          pendingRunKeyRef.current = null;
-          startTimeRef.current = currentTime - holdMs;
-          lastPercentRef.current = 0;
-          holdUntilRef.current = null;
-        }
+    const totalNodes = promptNodeIds.length || fallbackTotalNodes;
+    if (totalNodes <= 0) return null;
 
-        if (lastRunKeyRef.current && runKey !== lastRunKeyRef.current) {
-          if (queuedRunKeyRef.current !== runKey) {
-            queuedRunKeyRef.current = runKey;
-            holdUntilRef.current = currentTime + holdMs;
-            lastPercentRef.current = 100;
-          }
-          nextValue = 100;
-        } else {
-          if (lastRunKeyRef.current !== runKey) {
-            startTimeRef.current = currentTime;
-            lastRunKeyRef.current = runKey;
-            lastPercentRef.current = 0;
-            holdUntilRef.current = null;
-          }
+    let completed = 0;
+    const counted = new Set<string>();
+    const denominatorIds = promptNodeIds.length ? new Set(promptNodeIds) : null;
 
-          const elapsedMs = Math.max(0, currentTime - (startTimeRef.current ?? currentTime));
-          const signature = getWorkflowSignature(workflow);
-          const estimateMs = workflowDurationStats[signature]?.avgMs ?? null;
-
-          let computedPercent: number;
-          if (!estimateMs) {
-            const elapsedSeconds = elapsedMs / 1000;
-            if (elapsedSeconds <= 50) {
-              computedPercent = elapsedSeconds;
-            } else {
-              computedPercent = 50 + (elapsedSeconds - 50) * 0.5;
-            }
-            computedPercent = Math.min(90, computedPercent);
-          } else {
-            const raw = (elapsedMs / estimateMs) * 100;
-            computedPercent = Math.min(99, Math.max(0, raw));
-          }
-
-          const next = Math.max(lastPercentRef.current, computedPercent);
-          lastPercentRef.current = next;
-          nextValue = Math.round(next);
-        }
-      }
-
-      if (lastEmittedRef.current !== nextValue) {
-        lastEmittedRef.current = nextValue;
-        setPercent(nextValue);
-      }
-    };
-
-    if (workflow) {
-      timeoutId = setTimeout(update, 0);
-      if (isRunning || holdUntilRef.current || runKey) {
-        intervalId = setInterval(update, 200);
-      }
-    } else {
-      timeoutId = setTimeout(update, 0);
+    for (const nodeId of Object.keys(completedNodeIds)) {
+      if (denominatorIds && !denominatorIds.has(nodeId)) continue;
+      if (counted.has(nodeId)) continue;
+      counted.add(nodeId);
+      completed += 1;
     }
 
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [workflow, runKey, isRunning, workflowDurationStats]);
+    const currentId = currentNodePath?.trim() ?? '';
+    const currentBelongsToPrompt =
+      currentId.length > 0 && (!denominatorIds || denominatorIds.has(currentId));
+    const currentFraction =
+      currentBelongsToPrompt && !counted.has(currentId)
+        ? Math.min(0.99, Math.max(0, currentNodeProgress / 100))
+        : 0;
 
-  return percent;
+    const percent = ((completed + currentFraction) / totalNodes) * 100;
+    const rounded = Math.min(100, Math.max(0, Math.round(percent)));
+
+    // While ComfyUI still reports an active run, never let the derived node
+    // counter reach 100. Some workflows have redacted/expanded/cached prompt
+    // node sets that make the UI-side denominator too small, so the overlay can
+    // hit 100 after text encode even though sampler/save nodes are still running.
+    // The real completion signal is `executing: { node: null }`, which flips
+    // isRunning false and allows the overlay to close.
+    return isRunning ? Math.min(99, rounded) : rounded;
+  }, [workflow, runKey, isRunning, promptNodeIds, fallbackTotalNodes, completedNodeIds, currentNodePath, currentNodeProgress]);
+
+  useEffect(() => {
+    // `workflowDurationStats` is intentionally accepted for call-site stability,
+    // but overall progress is now derived only from real ComfyUI node events.
+    void workflowDurationStats;
+  }, [workflowDurationStats]);
+
+  useEffect(() => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    if (runKey) {
+      lastRunKeyRef.current = runKey;
+      setHeldComplete(false);
+      return;
+    }
+
+    if (lastRunKeyRef.current) {
+      lastRunKeyRef.current = null;
+      setHeldComplete(true);
+      holdTimeoutRef.current = setTimeout(() => setHeldComplete(false), 250);
+      return;
+    }
+
+    setHeldComplete(false);
+
+    return () => {
+      if (holdTimeoutRef.current) {
+        clearTimeout(holdTimeoutRef.current);
+        holdTimeoutRef.current = null;
+      }
+    };
+  }, [runKey]);
+
+  if (realPercent !== null) return realPercent;
+  if (heldComplete) return 100;
+  return null;
 }

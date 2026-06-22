@@ -11,6 +11,8 @@ vi.mock('@/api/client', () => ({
   getFileWorkflowAvailability: (...args: unknown[]) =>
     getFileWorkflowAvailabilityMock(...args),
   getImageMetadata: (...args: unknown[]) => getImageMetadataMock(...args),
+  loadRecentWorkflowsFromServer: vi.fn().mockResolvedValue([]),
+  saveRecentWorkflowsToServer: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/hooks/useTextareaFocus', () => ({

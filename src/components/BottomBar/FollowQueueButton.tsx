@@ -2,41 +2,44 @@ import { useCallback, useMemo } from "react";
 import { ProgressRing, QueueStackIcon } from "@/components/icons";
 
 interface FollowQueueButtonProps {
+  currentPanel: 'workflow' | 'queue' | 'outputs';
   viewerOpen: boolean;
   followQueue: boolean;
   queueSize: number;
   overallProgress: number | null;
-  onToggleFollowQueue?: () => void;
   onOpenFollowQueue?: () => void;
+  onCloseFollowQueue?: () => void;
 }
 
 export function FollowQueueButton({
+  currentPanel,
   viewerOpen,
   followQueue,
   queueSize,
   overallProgress,
-  onToggleFollowQueue,
   onOpenFollowQueue,
+  onCloseFollowQueue,
 }: FollowQueueButtonProps) {
   const handleClick = useCallback(() => {
     if (viewerOpen) {
-      onToggleFollowQueue?.();
+      onCloseFollowQueue?.();
     } else {
       onOpenFollowQueue?.();
     }
-  }, [viewerOpen, onToggleFollowQueue, onOpenFollowQueue]);
+  }, [viewerOpen, onCloseFollowQueue, onOpenFollowQueue]);
 
   const ariaLabel = useMemo(() => {
-    if (!viewerOpen) return "Open image viewer";
-    return followQueue ? "Disable follow queue" : "Enable follow queue";
-  }, [viewerOpen, followQueue]);
+    if (viewerOpen) return "Close image viewer and return to queue and recent outputs";
+    return "Open queue and recent outputs";
+  }, [viewerOpen]);
 
   const buttonClassName = useMemo(() => {
+    if (currentPanel === 'queue' && !viewerOpen) return "bg-blue-500 text-white";
     if (!viewerOpen) return "bg-gray-100 text-gray-700 hover:bg-gray-200";
     return followQueue
       ? "bg-green-500 text-white"
       : "bg-gray-100 text-gray-700 hover:bg-gray-200";
-  }, [viewerOpen, followQueue]);
+  }, [currentPanel, viewerOpen, followQueue]);
 
   return (
     <button

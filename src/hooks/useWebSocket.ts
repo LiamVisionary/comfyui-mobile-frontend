@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { connectWebSocket, clientId } from '@/api/client';
+import { connectWebSocket, clientId, getImageUrl } from '@/api/client';
 import { useWorkflowStore } from './useWorkflow';
 import { useLoraManagerStore } from './useLoraManager';
 import { useQueueStore } from './useQueue';
@@ -59,12 +59,14 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingOutputsRef = useRef<Record<string, HistoryOutputImage[]>>({});
+  const imagePreloadersRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   // Use refs for store actions to avoid recreating callbacks
   const storeActionsRef = useRef({
     setExecutionState: useWorkflowStore.getState().setExecutionState,
     setNodeOutput: useWorkflowStore.getState().setNodeOutput,
     setNodeTextOutput: useWorkflowStore.getState().setNodeTextOutput,
+    markExecutionNodeComplete: useWorkflowStore.getState().markExecutionNodeComplete,
     clearNodeOutputs: useWorkflowStore.getState().clearNodeOutputs,
     setLatentPreview: useWorkflowStore.getState().setLatentPreview,
     clearAllLatentPreviews: useWorkflowStore.getState().clearAllLatentPreviews,
@@ -87,6 +89,7 @@ export function useWebSocket() {
       setExecutionState: useWorkflowStore.getState().setExecutionState,
       setNodeOutput: useWorkflowStore.getState().setNodeOutput,
       setNodeTextOutput: useWorkflowStore.getState().setNodeTextOutput,
+      markExecutionNodeComplete: useWorkflowStore.getState().markExecutionNodeComplete,
       clearNodeOutputs: useWorkflowStore.getState().clearNodeOutputs,
       setLatentPreview: useWorkflowStore.getState().setLatentPreview,
       clearAllLatentPreviews: useWorkflowStore.getState().clearAllLatentPreviews,
@@ -184,6 +187,7 @@ export function useWebSocket() {
         setExecutionState,
         setNodeOutput,
         setNodeTextOutput,
+        markExecutionNodeComplete,
         addPromptOutputs,
         clearPromptOutputs,
         updateFromStatus,
@@ -214,10 +218,15 @@ export function useWebSocket() {
           const queueRemaining = statusMsg.data.status.exec_info.queue_remaining;
           updateFromStatus(queueRemaining);
 
-          if (queueRemaining === 0) {
-            setExecutionState(false, null, null, 0);
-            storeActionsRef.current.clearAllLatentPreviews();
-          }
+          // `queue_remaining` is only the number of queued/pending jobs after the
+          // currently executing prompt, not a reliable completion signal for the
+          // active prompt. It commonly drops to 0 while ComfyUI is still running
+          // sampler/save nodes, which made the bottom progress overlay disappear
+          // early even though the queue panel and Run button still showed running.
+          // Completion is handled by `executing: { node: null }` below, and the
+          // app-level queue reconciliation clears stale state only after /queue is
+          // verified empty.
+          void queueRemaining;
           break;
         }
 
@@ -232,6 +241,9 @@ export function useWebSocket() {
             progress,
             resolveExecutionNodePath(node),
           );
+          if (max > 0 && value >= max) {
+            markExecutionNodeComplete(node);
+          }
           break;
         }
 
@@ -242,6 +254,10 @@ export function useWebSocket() {
 
           if (nodeId === null) {
             // Execution finished
+            const previousNodePath = useWorkflowStore.getState().executingNodePath;
+            if (previousNodePath) {
+              markExecutionNodeComplete(previousNodePath);
+            }
             setExecutionState(false, null, null, 0);
             storeActionsRef.current.clearAllLatentPreviews();
 
@@ -263,12 +279,29 @@ export function useWebSocket() {
               }
               // Cleanup
               delete pendingOutputsRef.current[promptId];
-              clearPromptOutputs(promptId);
+              // Keep live prompt outputs around briefly after completion. The mobile
+              // viewer consumes this same optimistic WebSocket output path; clearing
+              // it immediately on `executing: null` can race React rendering on
+              // phones, making the viewer fall back to the slower /history refresh.
+              window.setTimeout(() => {
+                clearPromptOutputs(promptId);
+              }, 120_000);
             }
 
             fetchQueue(); // Refresh queue state
-            fetchHistory();
+            // Keep the optimistic `executed` image visible immediately. A full history
+            // refresh can be expensive because it walks/decrypts metadata for many
+            // items; run it shortly after completion instead of competing with the
+            // just-finished image fetch/render.
+            window.setTimeout(() => {
+              fetchHistory();
+            }, 1500);
           } else {
+            const previousNodePath = useWorkflowStore.getState().executingNodePath;
+            const nextNodePath = resolveExecutionNodePath(nodeId);
+            if (previousNodePath && previousNodePath !== nextNodePath) {
+              markExecutionNodeComplete(previousNodePath);
+            }
             // Track new prompt without clearing existing outputs to avoid layout shift.
             if (promptId && promptId !== lastPromptIdRef.current) {
               lastPromptIdRef.current = promptId;
@@ -280,7 +313,7 @@ export function useWebSocket() {
               resolveNodeHierarchicalKey(nodeId),
               promptId || null,
               0,
-              resolveExecutionNodePath(nodeId),
+              nextNodePath,
             );
             // Sync queue if we don't see this prompt_id as running yet
             const queueStore = useQueueStore.getState();
@@ -294,16 +327,51 @@ export function useWebSocket() {
         case 'executed': {
           const executedMsg = msg as WSExecutedMessage;
           const { node, prompt_id, output } = executedMsg.data;
+          markExecutionNodeComplete(node);
           const itemKey = resolveNodeHierarchicalKey(node);
           const itemKeysForOutput = resolveNodeHierarchicalKeysForOutput(node);
           const images = output.images;
           if (images) {
-             // Store for history
+             // Start the browser fetch immediately from the websocket payload, before
+             // React finishes re-rendering the queue/history cards. On phones/tunnels
+             // this shaves the visible "blank thumbnail" gap after SaveImage completes.
+             images.forEach((img) => {
+               if (img.type !== 'output') return;
+               const src = getImageUrl(img.filename, img.subfolder, img.type);
+               if (imagePreloadersRef.current.has(src)) return;
+               const preloader = new Image();
+               preloader.decoding = 'async';
+               preloader.loading = 'eager';
+               preloader.onload = () => {
+                 // Keep a short-lived reference so WebKit does not cancel the request,
+                 // then let old preloads be collected after the visible image has had
+                 // time to reuse the decoded resource.
+                 window.setTimeout(() => {
+                   imagePreloadersRef.current.delete(src);
+                 }, 30_000);
+               };
+               preloader.onerror = () => {
+                 imagePreloadersRef.current.delete(src);
+               };
+               imagePreloadersRef.current.set(src, preloader);
+               preloader.src = src;
+             });
+
+             // Store for history and show saved outputs immediately when the Save Image node executes.
+             // Waiting for the final `executing: null` + full /history refresh can add a long tail on
+             // mobile, especially when the queue panel is also scanning filesystem-backed outputs.
              if (!pendingOutputsRef.current[prompt_id]) {
                pendingOutputsRef.current[prompt_id] = [];
              }
              pendingOutputsRef.current[prompt_id].push(...images);
              addPromptOutputs(prompt_id, images);
+             const runningItem = useQueueStore.getState().running.find(r => r.prompt_id === prompt_id);
+             addHistoryEntry({
+               prompt_id,
+               timestamp: Date.now(),
+               outputs: { images: pendingOutputsRef.current[prompt_id] },
+               prompt: runningItem?.prompt ?? {},
+             });
 
              // Store for node display
              const targetKeys =
@@ -313,6 +381,11 @@ export function useWebSocket() {
              targetKeys.forEach((key) => {
                setNodeOutput(key, images);
              });
+             if (targetKeys.length > 0) {
+               window.dispatchEvent(new CustomEvent('workflow-scroll-to-output', {
+                 detail: { itemKey: targetKeys[targetKeys.length - 1], nodeId: node }
+               }));
+             }
           }
           const textPreview = extractTextPreviewFromOutput(output as Record<string, unknown>);
           if (textPreview && itemKeysForOutput.length > 0) {
@@ -374,7 +447,26 @@ export function useWebSocket() {
         }
 
         case 'execution_cached': {
-          // Node was cached, no need to run
+          // Cached nodes count as complete for real overall progress.
+          // ComfyUI can emit this before the first `executing` event for a
+          // prompt. Prime the prompt id first; otherwise the first executing
+          // event sees a prompt change and clears the cached completions, which
+          // makes overall progress top out around the non-cached tail nodes.
+          const cachedData = (msg as WSMessage).data as Record<string, unknown>;
+          const promptId = asText(cachedData.prompt_id);
+          if (promptId) {
+            setExecutionState(
+              true,
+              null,
+              promptId,
+              useWorkflowStore.getState().progress,
+              useWorkflowStore.getState().executingNodePath,
+            );
+          }
+          const nodes = cachedData.nodes;
+          if (Array.isArray(nodes)) {
+            nodes.forEach((node) => markExecutionNodeComplete(node as string | number));
+          }
           break;
         }
 
@@ -474,11 +566,10 @@ export function useWebSocket() {
 
     connect();
     const pollInterval = setInterval(() => {
-      const { fetchQueue, fetchHistory } = storeActionsRef.current;
+      const { fetchQueue } = storeActionsRef.current;
       const queueState = useQueueStore.getState();
       if (queueState.running.length > 0) {
         fetchQueue();
-        fetchHistory();
       }
     }, 2000);
 

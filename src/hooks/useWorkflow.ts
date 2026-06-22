@@ -95,6 +95,7 @@ import { computeNodeGroupsFor } from "@/utils/nodeGroups";
 import { findLayoutPath } from "@/utils/layoutTraversal";
 import { resolveWorkflowColor, themeColors } from "@/theme/colors";
 import { validateAndNormalizeWorkflow } from "@/utils/workflowValidator";
+import { encryptWorkflowForStorage } from "@/utils/workflowEncryption";
 
 // ScopeFrame is defined in canonicalWorkflowOps.ts and re-exported here.
 export type { ScopeFrame };
@@ -232,6 +233,495 @@ function layoutMatchesWorkflowNodes(
     if (!layoutNodeIds.has(nodeId)) return false;
   }
   return true;
+}
+
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+type ApiPromptNode = { class_type: string; inputs: Record<string, unknown> };
+type ApiPrompt = Record<string, ApiPromptNode>;
+type PromptRef = [string | number, number];
+
+export type LoraExecutionMode = "optimizer" | "fast" | "cached";
+
+const LORA_MODE_LABELS: Record<LoraExecutionMode, string> = {
+  optimizer: "Optimizer LoRA",
+  fast: "Fast LoRA",
+  cached: "Cached merged LoRA",
+};
+
+function isLoraMode(value: unknown): value is LoraExecutionMode {
+  return value === "optimizer" || value === "fast" || value === "cached";
+}
+
+function getWorkflowMobileExtra(workflow: Workflow | null): Record<string, unknown> {
+  const extra = workflow?.extra;
+  const mobile = extra && typeof extra === "object" ? (extra as Record<string, unknown>).comfyMobile : null;
+  return mobile && typeof mobile === "object" && !Array.isArray(mobile) ? mobile as Record<string, unknown> : {};
+}
+
+export function getWorkflowLoraMode(workflow: Workflow | null): LoraExecutionMode {
+  const configured = getWorkflowMobileExtra(workflow).loraMode;
+  if (isLoraMode(configured)) return configured;
+  const nodes = workflow ? getAllWorkflowNodes(workflow) : [];
+  if (nodes.some((node) => node.type === "LoRAOptimizerSimple")) return "optimizer";
+  if (nodes.some((node) => node.type === "LoraLoader" || node.type === "LoRAStack")) return "fast";
+  return "fast";
+}
+
+export function getWorkflowLoraModeLabel(mode: LoraExecutionMode): string {
+  return LORA_MODE_LABELS[mode];
+}
+
+export function isLoraModeNode(nodeType: string): boolean {
+  return nodeType === "LoRAOptimizerSimple"
+    || nodeType === "LoRAStack"
+    || nodeType === "LoraLoader"
+    || nodeType === "SaveMergedLoRA"
+    || /lora/i.test(nodeType);
+}
+
+function workflowHasBypassedLoraNodes(workflow: Workflow | null): boolean {
+  const visit = (nodes: WorkflowNode[] | undefined): boolean =>
+    Boolean(nodes?.some((node) => node.mode === 4 && isLoraModeNode(node.type)));
+  if (!workflow) return false;
+  if (visit(workflow.nodes)) return true;
+  return Boolean(workflow.definitions?.subgraphs?.some((subgraph) => visit(subgraph.nodes)));
+}
+
+function isPromptRef(value: unknown): value is PromptRef {
+  return Array.isArray(value)
+    && value.length === 2
+    && (typeof value[0] === "string" || typeof value[0] === "number")
+    && typeof value[1] === "number";
+}
+
+function samePromptRef(value: unknown, nodeId: string, slot: number): boolean {
+  return isPromptRef(value) && String(value[0]) === nodeId && value[1] === slot;
+}
+
+function replacePromptRefs(value: unknown, nodeId: string, slot: number, replacement: PromptRef): unknown {
+  if (samePromptRef(value, nodeId, slot)) return replacement;
+  if (Array.isArray(value)) {
+    return value.map((entry) => replacePromptRefs(entry, nodeId, slot, replacement));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, replacePromptRefs(entry, nodeId, slot, replacement)]),
+    );
+  }
+  return value;
+}
+
+function stableHashString(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(7, "0");
+}
+
+function getAvailableLoraNames(nodeTypes: NodeTypes | null): Set<string> {
+  const values = nodeTypes?.LoraLoader?.input?.required?.lora_name?.[0];
+  return new Set(Array.isArray(values) ? values.map((value) => String(value)) : []);
+}
+
+function collectBypassedLoraNames(workflows: Array<Workflow | null>): Set<string> {
+  const names = new Set<string>();
+  const addFromNode = (node: WorkflowNode) => {
+    if (node.mode !== 4 || !isLoraModeNode(node.type)) return;
+    const values = Array.isArray(node.widgets_values) ? node.widgets_values : [];
+    for (const value of values) {
+      if (typeof value === "string" && /\.(safetensors|ckpt|pt|pth)$/i.test(value)) {
+        names.add(value);
+      }
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          if (entry && typeof entry === "object") {
+            const record = entry as Record<string, unknown>;
+            const name = record.name ?? record.lora ?? record.lora_name;
+            if (typeof name === "string" && name) names.add(name);
+          }
+        }
+      }
+      if (value && typeof value === "object") {
+        const record = value as Record<string, unknown>;
+        const name = record.name ?? record.lora ?? record.lora_name;
+        if (typeof name === "string" && name) names.add(name);
+      }
+    }
+  };
+  const visit = (workflow: Workflow | null) => {
+    if (!workflow) return;
+    workflow.nodes?.forEach(addFromNode);
+    workflow.definitions?.subgraphs?.forEach((subgraph) => subgraph.nodes?.forEach(addFromNode));
+  };
+  workflows.forEach(visit);
+  return names;
+}
+
+function normalizeLoraNameForCompare(name: string): string {
+  return name.replace(/\\/g, "/").split("/").pop()?.replace(/\.(safetensors|ckpt|pt|pth)$/i, "").toLowerCase() ?? name.toLowerCase();
+}
+
+function removeDisabledLorasFromPrompt(prompt: ApiPrompt, disabledLoraNames: Set<string>): ApiPrompt {
+  if (disabledLoraNames.size === 0) return prompt;
+  const disabled = new Set(Array.from(disabledLoraNames).map(normalizeLoraNameForCompare));
+  const next = cloneJson(prompt);
+  const shouldDisable = (value: unknown): value is string => (
+    typeof value === "string" && disabled.has(normalizeLoraNameForCompare(value))
+  );
+
+  for (const [nodeId, node] of Object.entries(next)) {
+    if (node.class_type === "LoraLoader" && shouldDisable(node.inputs.lora_name)) {
+      const modelInput = node.inputs.model;
+      const clipInput = node.inputs.clip;
+      if (isPromptRef(modelInput)) {
+        for (const target of Object.values(next)) {
+          target.inputs = replacePromptRefs(target.inputs, nodeId, 0, modelInput) as Record<string, unknown>;
+        }
+      }
+      if (isPromptRef(clipInput)) {
+        for (const target of Object.values(next)) {
+          target.inputs = replacePromptRefs(target.inputs, nodeId, 1, clipInput) as Record<string, unknown>;
+        }
+      }
+      delete next[nodeId];
+    }
+  }
+
+  for (const [nodeId, node] of Object.entries(next)) {
+    if (node.class_type === "LoRAStack" && shouldDisable(node.inputs.lora_name)) {
+      const parent = node.inputs.lora_stack;
+      if (isPromptRef(parent)) {
+        for (const target of Object.values(next)) {
+          target.inputs = replacePromptRefs(target.inputs, nodeId, 0, parent) as Record<string, unknown>;
+        }
+      }
+      delete next[nodeId];
+    }
+  }
+
+  return next;
+}
+
+function getCachedMergedLoraName(items: Array<{ name: string; strength: number }>, outputStrength: unknown): string {
+  const signature = JSON.stringify({
+    items: items.map((item) => ({ name: item.name, strength: Number(item.strength.toFixed(4)) })),
+    outputStrength: typeof outputStrength === "number" ? Number(outputStrength.toFixed(4)) : 1,
+  });
+  return `mobile_merged/${stableHashString(signature)}.safetensors`;
+}
+
+function rewriteSlowLoraOptimizerNodesForQueue(prompt: ApiPrompt, mode: LoraExecutionMode = "fast", availableLoras: Set<string> = new Set()): ApiPrompt {
+  const next = cloneJson(prompt);
+  const optimizerEntries = Object.entries(next).filter(([, node]) => node.class_type === "LoRAOptimizerSimple");
+  for (const [optimizerId, optimizer] of optimizerEntries) {
+    const modelInput = optimizer.inputs.model;
+    const clipInput = optimizer.inputs.clip;
+    const stackInput = optimizer.inputs.lora_stack;
+    if (!isPromptRef(modelInput) || !isPromptRef(clipInput) || !isPromptRef(stackInput)) continue;
+
+    const stackNodes: ApiPromptNode[] = [];
+    let cursor: PromptRef | null = stackInput;
+    const visited = new Set<string>();
+    while (cursor) {
+      const stackId: string = String(cursor[0]);
+      if (visited.has(stackId)) break;
+      visited.add(stackId);
+      const stackNode: ApiPromptNode | undefined = next[stackId];
+      if (!stackNode || stackNode.class_type !== "LoRAStack") break;
+      stackNodes.push(stackNode);
+      const parent: unknown = stackNode.inputs.lora_stack;
+      cursor = isPromptRef(parent) ? parent : null;
+    }
+    const loraItems = stackNodes.reverse().map((node) => ({
+      name: typeof node.inputs.lora_name === "string" ? node.inputs.lora_name : null,
+      strength: typeof node.inputs.strength === "number" ? node.inputs.strength : 1,
+    })).filter((item): item is { name: string; strength: number } => Boolean(item.name));
+    if (loraItems.length === 0) continue;
+
+    let effectiveItems = loraItems;
+    const cacheName = getCachedMergedLoraName(loraItems, optimizer.inputs.output_strength);
+    const cachedFileExists = mode === "cached" && availableLoras.has(cacheName);
+    const shouldCreateCache = mode === "cached" && !cachedFileExists;
+    if (cachedFileExists) {
+      effectiveItems = [{ name: cacheName, strength: 1 }];
+    } else if (shouldCreateCache) {
+      const saveId = `${optimizerId}_save_merged_lora`;
+      next[saveId] = {
+        class_type: "SaveMergedLoRA",
+        inputs: {
+          lora_data: [optimizerId, 4],
+          save_folder: "models/loras",
+          filename: cacheName.replace(/\.safetensors$/i, ""),
+          save_rank: 0,
+          bake_strength: true,
+          prompt: "",
+          description: "",
+        },
+      };
+    }
+
+    let modelSrc: PromptRef = modelInput;
+    let clipSrc: PromptRef = clipInput;
+    effectiveItems.forEach((item, index) => {
+      const loaderId = `${optimizerId}_fast_lora_${index + 1}`;
+      next[loaderId] = {
+        class_type: "LoraLoader",
+        inputs: {
+          model: modelSrc,
+          clip: clipSrc,
+          lora_name: item.name,
+          strength_model: item.strength,
+          strength_clip: item.strength,
+        },
+      };
+      modelSrc = [loaderId, 0];
+      clipSrc = [loaderId, 1];
+    });
+
+    for (const node of Object.values(next)) {
+      node.inputs = replacePromptRefs(node.inputs, optimizerId, 0, modelSrc) as Record<string, unknown>;
+      node.inputs = replacePromptRefs(node.inputs, optimizerId, 1, clipSrc) as Record<string, unknown>;
+    }
+    if (!shouldCreateCache) {
+      delete next[optimizerId];
+    }
+  }
+  return next;
+}
+
+function shiftWorkflowNodeId(nodeId: number, insertedId: number): number {
+  return nodeId >= insertedId ? nodeId + 1 : nodeId;
+}
+
+function shiftNodeRefIdsInLayout(layout: MobileLayout, insertedId: number): MobileLayout {
+  const shiftRef = (ref: ItemRef): ItemRef => {
+    if (ref.type === "node") return { ...ref, id: shiftWorkflowNodeId(ref.id, insertedId) };
+    if (ref.type === "subgraph" && ref.nodeId !== undefined) {
+      return { ...ref, nodeId: shiftWorkflowNodeId(ref.nodeId, insertedId) };
+    }
+    return ref;
+  };
+  const shiftRefs = (refs: ItemRef[]) => refs.map(shiftRef);
+  return {
+    ...layout,
+    root: shiftRefs(layout.root),
+    groups: Object.fromEntries(
+      Object.entries(layout.groups).map(([key, refs]) => [key, shiftRefs(refs)]),
+    ),
+    subgraphs: Object.fromEntries(
+      Object.entries(layout.subgraphs).map(([key, refs]) => [key, shiftRefs(refs)]),
+    ),
+    hiddenBlocks: Object.fromEntries(
+      Object.entries(layout.hiddenBlocks).map(([key, ids]) => [
+        key,
+        ids.map((id) => shiftWorkflowNodeId(id, insertedId)),
+      ]),
+    ),
+  };
+}
+
+function insertNodeAfterInLayout(
+  layout: MobileLayout,
+  afterNodeId: number,
+  newNodeId: number,
+  subgraphId: string | null,
+): MobileLayout {
+  const insertIntoRefs = (
+    refs: ItemRef[],
+    currentSubgraphId: string | null,
+  ): { refs: ItemRef[]; inserted: boolean } => {
+    const next: ItemRef[] = [];
+    let inserted = false;
+    for (const ref of refs) {
+      next.push(ref);
+      if (!inserted && currentSubgraphId === subgraphId && ref.type === "node" && ref.id === afterNodeId) {
+        next.push({ type: "node", id: newNodeId });
+        inserted = true;
+      }
+    }
+    return { refs: inserted ? next : refs, inserted };
+  };
+
+  const rootResult = insertIntoRefs(layout.root, null);
+  if (rootResult.inserted) return { ...layout, root: rootResult.refs };
+
+  for (const [groupKey, refs] of Object.entries(layout.groups)) {
+    const groupSubgraphId = parseLocationPointer(groupKey)?.subgraphId ?? null;
+    const result = insertIntoRefs(refs, groupSubgraphId);
+    if (result.inserted) {
+      return { ...layout, groups: { ...layout.groups, [groupKey]: result.refs } };
+    }
+  }
+
+  if (subgraphId != null) {
+    const refs = layout.subgraphs[subgraphId] ?? [];
+    const result = insertIntoRefs(refs, subgraphId);
+    if (result.inserted) {
+      return { ...layout, subgraphs: { ...layout.subgraphs, [subgraphId]: result.refs } };
+    }
+  }
+
+  return subgraphId == null
+    ? { ...layout, root: [...layout.root, { type: "node", id: newNodeId }] }
+    : {
+        ...layout,
+        subgraphs: {
+          ...layout.subgraphs,
+          [subgraphId]: [...(layout.subgraphs[subgraphId] ?? []), { type: "node", id: newNodeId }],
+        },
+      };
+
+}
+
+type LoraInsertionPlan = {
+  anchorNodeId: number;
+  modelSource: { nodeId: number; slot: number; linkIds: number[] };
+  clipSource: { nodeId: number; slot: number; linkIds: number[] };
+};
+
+function isLoraLoaderNode(node: WorkflowNode): boolean {
+  return /lora\s*loader/i.test(node.type);
+}
+
+function getOutputSlot(node: WorkflowNode, type: string): number {
+  return node.outputs.findIndex((output) => areTypesCompatible(output.type, type));
+}
+
+function buildWidgetDefaultsForNodeType(
+  typeDef: NodeTypes[string],
+): unknown[] {
+  const widgetsValues: unknown[] = [];
+  const requiredInputs = typeDef.input?.required ?? {};
+  const optionalInputs = typeDef.input?.optional ?? {};
+  const requiredOrder = typeDef.input_order?.required ?? Object.keys(requiredInputs);
+  const optionalOrder = typeDef.input_order?.optional ?? Object.keys(optionalInputs);
+  const appendWidgetDefault = (def: [string, Record<string, unknown>?] | undefined) => {
+    if (!def) return;
+    const [typeOrOptions, opts] = def;
+    if (Array.isArray(typeOrOptions)) {
+      widgetsValues.push(typeOrOptions[0] ?? "");
+      return;
+    }
+    const normalized = String(typeOrOptions).toUpperCase();
+    if (normalized === "INT") widgetsValues.push(opts?.default ?? 0);
+    else if (normalized === "FLOAT") widgetsValues.push(opts?.default ?? 0.0);
+    else if (normalized === "STRING") widgetsValues.push(opts?.default ?? "");
+    else if (normalized === "BOOLEAN") widgetsValues.push(opts?.default ?? false);
+  };
+  requiredOrder.forEach((name) => appendWidgetDefault(requiredInputs[name]));
+  optionalOrder.forEach((name) => appendWidgetDefault(optionalInputs[name]));
+  return widgetsValues;
+}
+
+function findDynamicLoraInsertionPlan(nodes: WorkflowNode[]): LoraInsertionPlan | null {
+  const loraNodes = nodes.filter(isLoraLoaderNode);
+  if (loraNodes.length > 0) {
+    const anchor = loraNodes[loraNodes.length - 1];
+    const modelSlot = getOutputSlot(anchor, "MODEL");
+    const clipSlot = getOutputSlot(anchor, "CLIP");
+    if (modelSlot >= 0 && clipSlot >= 0) {
+      return {
+        anchorNodeId: anchor.id,
+        modelSource: { nodeId: anchor.id, slot: modelSlot, linkIds: [...(anchor.outputs[modelSlot]?.links ?? [])] },
+        clipSource: { nodeId: anchor.id, slot: clipSlot, linkIds: [...(anchor.outputs[clipSlot]?.links ?? [])] },
+      };
+    }
+  }
+
+  const findSource = (type: string, preferredInputNames: string[]) => {
+    for (const node of nodes) {
+      for (let outputSlot = 0; outputSlot < node.outputs.length; outputSlot += 1) {
+        const output = node.outputs[outputSlot];
+        const linkIds = output.links ?? [];
+        if (linkIds.length === 0 || !areTypesCompatible(output.type, type)) continue;
+        const usefulLinks = linkIds.filter((linkId) =>
+          nodes.some((target) =>
+            target.inputs.some(
+              (input) =>
+                input.link === linkId &&
+                areTypesCompatible(type, input.type) &&
+                (preferredInputNames.length === 0 ||
+                  preferredInputNames.some((name) => input.name.toLowerCase().includes(name))),
+            ),
+          ),
+        );
+        if (usefulLinks.length > 0) return { nodeId: node.id, slot: outputSlot, linkIds: usefulLinks };
+      }
+    }
+    for (const node of nodes) {
+      for (let outputSlot = 0; outputSlot < node.outputs.length; outputSlot += 1) {
+        const output = node.outputs[outputSlot];
+        const linkIds = output.links ?? [];
+        if (linkIds.length > 0 && areTypesCompatible(output.type, type)) {
+          return { nodeId: node.id, slot: outputSlot, linkIds: [...linkIds] };
+        }
+      }
+    }
+    return null;
+  };
+
+  const modelSource = findSource("MODEL", ["model"]);
+  const clipSource = findSource("CLIP", ["clip"]);
+  if (!modelSource || !clipSource) return null;
+  return {
+    anchorNodeId: Math.max(modelSource.nodeId, clipSource.nodeId),
+    modelSource,
+    clipSource,
+  };
+}
+
+function retargetLinkOrigin(
+  link: WorkflowLink | WorkflowSubgraphLink,
+  originId: number,
+  originSlot: number,
+): WorkflowLink | WorkflowSubgraphLink {
+  if (Array.isArray(link)) return [link[0], originId, originSlot, link[3], link[4], link[5]];
+  return { ...link, origin_id: originId, origin_slot: originSlot };
+}
+
+function getAllWorkflowNodes(workflow: Workflow): WorkflowNode[] {
+  return [
+    ...workflow.nodes,
+    ...(workflow.definitions?.subgraphs ?? []).flatMap((subgraph) => subgraph.nodes ?? []),
+  ];
+}
+
+function isPromptEditorNode(node: WorkflowNode): boolean {
+  const title = typeof node.title === "string" ? node.title : "";
+  const properties = node.properties as Record<string, unknown> | undefined;
+  const propertyText = [
+    properties?.title,
+    properties?.label,
+    properties?.name,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  const searchable = `${node.type} ${title} ${propertyText}`;
+
+  if (/\b(prompt|positive|negative)\b/i.test(searchable)) return true;
+  if (/clip\s*text\s*encode|text\s*encode|t5\s*text/i.test(searchable)) return true;
+  if (/lora\s*manager/i.test(searchable) && /text|prompt/i.test(searchable)) return true;
+
+  return false;
+}
+
+function buildCompactDefaultCollapsedItems(workflow: Workflow): Record<string, boolean> {
+  const collapsedItems: Record<string, boolean> = {};
+
+  for (const node of getAllWorkflowNodes(workflow)) {
+    const itemKey = typeof node.itemKey === "string" ? node.itemKey : null;
+    if (!itemKey) continue;
+    if (isPromptEditorNode(node)) continue;
+    collapsedItems[itemKey] = true;
+  }
+
+  return collapsedItems;
 }
 
 function nodeStateKey(
@@ -750,6 +1240,7 @@ interface NodeOutputImage {
 export type WorkflowSource =
   | { type: "user"; filename: string }
   | { type: "history"; promptId: string }
+  | { type: "favorite"; groupKey: string }
   | { type: "template"; moduleName: string; templateName: string }
   | { type: "file"; filePath: string; assetSource: "output" | "input" | "temp" }
   | { type: "other" };
@@ -779,6 +1270,9 @@ interface WorkflowState {
   executingNodePath: string | null;
   executingPromptId: string | null; // Track the ID of the prompt being executed
   progress: number;
+  // Raw ComfyUI prompt node IDs completed in the currently executing prompt.
+  // Used for real overall progress instead of elapsed-time estimation.
+  executionCompletedNodeIds: Record<string, true>;
   // Maps hierarchical prompt keys (e.g. "50:7") to canonical itemKeys for WS message routing
   expandedNodeIdMap: Record<string, string>;
   // Maps WS node identifiers (expanded numeric IDs and prompt keys) to
@@ -840,6 +1334,9 @@ interface WorkflowState {
       inSubgraphId?: string;
     },
   ) => number | null;
+  duplicateNodeAfter: (itemKey: HierarchicalKey) => number | null;
+  insertLoraNodeDynamic: (itemKey?: HierarchicalKey | null) => number | null;
+  setLoraExecutionMode: (mode: LoraExecutionMode) => void;
   addGroupNearNode: (nearNodeHierarchicalKey?: HierarchicalKey | null) => HierarchicalKey | null;
   addNodeAndConnect: (
     nodeType: string,
@@ -887,6 +1384,7 @@ interface WorkflowState {
     progress: number,
     executingNodePath?: string | null,
   ) => void;
+  markExecutionNodeComplete: (nodeId: string | number | null | undefined) => void;
   queueWorkflow: (count: number) => Promise<void>;
   saveCurrentWorkflowState: () => void;
   setNodeOutput: (itemKey: HierarchicalKey, images: NodeOutputImage[]) => void;
@@ -2454,6 +2952,336 @@ export const useWorkflowStore = create<WorkflowState>()(
         return newId;
       };
 
+      const duplicateNodeAfter: WorkflowState["duplicateNodeAfter"] = (itemKey) => {
+        const {
+          workflow,
+          mobileLayout,
+          hiddenItems,
+          connectionHighlightModes,
+          collapsedItems,
+          itemKeyByPointer,
+          pointerByHierarchicalKey,
+          scopeStack,
+        } = get();
+        if (!workflow) return null;
+
+        const scope = resolveCurrentScope(scopeStack, workflow);
+        const node = resolveNodeByHierarchicalKey(scope.nodes, itemKey);
+        if (!node) return null;
+
+        const sourceId = node.id;
+        const newId = sourceId + 1;
+        const subgraphId = scope.subgraphId;
+        const nextLastNodeId = Math.max(workflow.last_node_id + 1, newId);
+        let nextLastLinkId = workflow.last_link_id;
+
+        const idMap = (id: number) => shiftWorkflowNodeId(id, newId);
+        const shiftedLinks = scope.links.map((link) => {
+          if (Array.isArray(link)) {
+            return [
+              link[0],
+              idMap(link[1]),
+              link[2],
+              idMap(link[3]),
+              link[4],
+              link[5],
+            ] as WorkflowLink;
+          }
+          return {
+            ...link,
+            origin_id: idMap(link.origin_id),
+            target_id: idMap(link.target_id),
+          } as WorkflowSubgraphLink;
+        });
+
+        const shiftedSource = {
+          ...cloneJson(node),
+          inputs: node.inputs.map((input) => ({ ...cloneJson(input) })),
+          outputs: node.outputs.map((output) => ({ ...cloneJson(output) })),
+        } as WorkflowNode;
+        const duplicatedNode: WorkflowNode = {
+          ...cloneJson(node),
+          id: newId,
+          pos: [node.pos[0] + 36, node.pos[1] + 36],
+          inputs: node.inputs.map((input) => ({ ...cloneJson(input), link: null })),
+          outputs: node.outputs.map((output) => ({ ...cloneJson(output), links: null })),
+          properties: cloneJson(node.properties ?? {}),
+          flags: cloneJson(node.flags ?? {}),
+          widgets_values: cloneJson(node.widgets_values ?? []),
+        };
+        delete duplicatedNode.itemKey;
+
+        const outputSlot = shiftedSource.outputs.findIndex((output) => (output.links?.length ?? 0) > 0);
+        const insertOutputSlot = outputSlot >= 0 ? outputSlot : 0;
+        const outputType = shiftedSource.outputs[insertOutputSlot]?.type;
+        const insertInputSlot = outputType
+          ? duplicatedNode.inputs.findIndex((input) => areTypesCompatible(outputType, input.type))
+          : -1;
+        const canInsertInChain = insertInputSlot >= 0 && shiftedSource.outputs[insertOutputSlot] != null;
+        const movedOutgoingLinkIds = new Set<number>(
+          canInsertInChain ? (shiftedSource.outputs[insertOutputSlot].links ?? []) : [],
+        );
+
+        const rewiredLinks = shiftedLinks.map((link) => {
+          if (!canInsertInChain || !movedOutgoingLinkIds.has(getLinkId(link))) return link;
+          if (Array.isArray(link)) {
+            return [link[0], newId, insertOutputSlot, link[3], link[4], link[5]] as WorkflowLink;
+          }
+          return { ...link, origin_id: newId, origin_slot: insertOutputSlot } as WorkflowSubgraphLink;
+        });
+
+        if (canInsertInChain) {
+          duplicatedNode.outputs[insertOutputSlot] = {
+            ...duplicatedNode.outputs[insertOutputSlot],
+            links: Array.from(movedOutgoingLinkIds),
+          };
+          nextLastLinkId += 1;
+          const insertLink = makeScopeLink(
+            nextLastLinkId,
+            sourceId,
+            insertOutputSlot,
+            newId,
+            insertInputSlot,
+            outputType,
+            subgraphId,
+          );
+          rewiredLinks.push(insertLink as WorkflowLink & WorkflowSubgraphLink);
+          duplicatedNode.inputs[insertInputSlot] = {
+            ...duplicatedNode.inputs[insertInputSlot],
+            link: nextLastLinkId,
+          };
+          const retainedSourceLinks = (shiftedSource.outputs[insertOutputSlot].links ?? []).filter(
+            (linkId) => !movedOutgoingLinkIds.has(linkId),
+          );
+          shiftedSource.outputs[insertOutputSlot] = {
+            ...shiftedSource.outputs[insertOutputSlot],
+            links: [...retainedSourceLinks, nextLastLinkId],
+          };
+        }
+
+        const newNodes = scope.nodes
+          .map((existing) => {
+            const shiftedId = idMap(existing.id);
+            if (existing.id === sourceId) return shiftedSource;
+            return { ...existing, id: shiftedId };
+          })
+          .flatMap((existing) => (existing.id === sourceId ? [existing, duplicatedNode] : [existing]));
+
+        const shiftedLayout = shiftNodeRefIdsInLayout(mobileLayout, newId);
+        const nextMobileLayout = insertNodeAfterInLayout(shiftedLayout, sourceId, newId, subgraphId);
+        const reconciled = reconcilePointerRegistry(
+          nextMobileLayout,
+          itemKeyByPointer,
+          pointerByHierarchicalKey,
+        );
+        const patchedWorkflow = {
+          ...scope.applyPatch(workflow, {
+            nodes: newNodes,
+            links: scope.subgraphId == null
+              ? (rewiredLinks as WorkflowLink[])
+              : (rewiredLinks as WorkflowSubgraphLink[]),
+            last_link_id: nextLastLinkId,
+          }),
+          last_node_id: nextLastNodeId,
+        };
+        const nextWorkflowWithHierarchicalKeys = annotateWorkflowWithHierarchicalKeys(
+          patchedWorkflow,
+          reconciled.layoutToStable,
+        );
+
+        set({
+          workflow: nextWorkflowWithHierarchicalKeys,
+          mobileLayout: nextMobileLayout,
+          hiddenItems: { ...hiddenItems },
+          collapsedItems: { ...collapsedItems },
+          connectionHighlightModes: { ...connectionHighlightModes },
+          itemKeyByPointer: reconciled.layoutToStable,
+          pointerByHierarchicalKey: reconciled.stableToLayout,
+        });
+
+        return newId;
+      };
+
+
+
+      const insertLoraNodeDynamic: WorkflowState["insertLoraNodeDynamic"] = (itemKey) => {
+        const {
+          workflow,
+          nodeTypes,
+          mobileLayout,
+          itemKeyByPointer,
+          pointerByHierarchicalKey,
+          scopeStack,
+        } = get();
+        if (!workflow || !nodeTypes?.LoraLoader) return null;
+
+        const scope = resolveCurrentScope(scopeStack, workflow);
+        const nodes = scope.nodes;
+        const typeDef = nodeTypes.LoraLoader;
+        const plan = (() => {
+          if (itemKey) {
+            const requested = resolveNodeByHierarchicalKey(nodes, itemKey);
+            if (requested && isLoraLoaderNode(requested)) {
+              const modelSlot = getOutputSlot(requested, "MODEL");
+              const clipSlot = getOutputSlot(requested, "CLIP");
+              if (modelSlot >= 0 && clipSlot >= 0) {
+                return {
+                  anchorNodeId: requested.id,
+                  modelSource: { nodeId: requested.id, slot: modelSlot, linkIds: [...(requested.outputs[modelSlot]?.links ?? [])] },
+                  clipSource: { nodeId: requested.id, slot: clipSlot, linkIds: [...(requested.outputs[clipSlot]?.links ?? [])] },
+                };
+              }
+            }
+          }
+          return findDynamicLoraInsertionPlan(nodes);
+        })();
+        if (!plan) return null;
+
+        const newId = workflow.last_node_id + 1;
+        let nextLastLinkId = workflow.last_link_id;
+        const inputs = [
+          { name: "model", type: "MODEL", link: null as number | null },
+          { name: "clip", type: "CLIP", link: null as number | null },
+        ];
+        const outputs = [
+          { name: "MODEL", type: "MODEL", links: null as number[] | null, slot_index: 0 },
+          { name: "CLIP", type: "CLIP", links: null as number[] | null, slot_index: 1 },
+        ];
+        const anchorNode = nodes.find((node) => node.id === plan.anchorNodeId) ?? nodes[0];
+        const newNode: WorkflowNode = {
+          id: newId,
+          type: "LoraLoader",
+          pos: anchorNode ? [anchorNode.pos[0] + 36, anchorNode.pos[1] + 36] : [0, 0],
+          size: [240, 120],
+          flags: {},
+          order: 0,
+          mode: 0,
+          inputs,
+          outputs,
+          properties: {},
+          widgets_values: buildWidgetDefaultsForNodeType(typeDef),
+        };
+
+        const modelMoved = new Set(plan.modelSource.linkIds);
+        const clipMoved = new Set(plan.clipSource.linkIds);
+        const nextLinks = scope.links.map((link) => {
+          const linkId = getLinkId(link);
+          if (modelMoved.has(linkId)) return retargetLinkOrigin(link, newId, 0);
+          if (clipMoved.has(linkId)) return retargetLinkOrigin(link, newId, 1);
+          return link;
+        });
+
+        nextLastLinkId += 1;
+        const modelBridgeId = nextLastLinkId;
+        nextLinks.push(
+          makeScopeLink(
+            modelBridgeId,
+            plan.modelSource.nodeId,
+            plan.modelSource.slot,
+            newId,
+            0,
+            "MODEL",
+            scope.subgraphId,
+          ) as WorkflowLink & WorkflowSubgraphLink,
+        );
+        nextLastLinkId += 1;
+        const clipBridgeId = nextLastLinkId;
+        nextLinks.push(
+          makeScopeLink(
+            clipBridgeId,
+            plan.clipSource.nodeId,
+            plan.clipSource.slot,
+            newId,
+            1,
+            "CLIP",
+            scope.subgraphId,
+          ) as WorkflowLink & WorkflowSubgraphLink,
+        );
+
+        const nextNodes = nodes.map((node) => {
+          if (node.id === plan.modelSource.nodeId || node.id === plan.clipSource.nodeId) {
+            const nextOutputs = node.outputs.map((output, slot) => {
+              if (node.id === plan.modelSource.nodeId && slot === plan.modelSource.slot) {
+                const retained = (output.links ?? []).filter((linkId) => !modelMoved.has(linkId));
+                return { ...output, links: [...retained, modelBridgeId] };
+              }
+              if (node.id === plan.clipSource.nodeId && slot === plan.clipSource.slot) {
+                const retained = (output.links ?? []).filter((linkId) => !clipMoved.has(linkId));
+                return { ...output, links: [...retained, clipBridgeId] };
+              }
+              return output;
+            });
+            return { ...node, outputs: nextOutputs };
+          }
+          return node;
+        }).map((node) => {
+          const nextInputs = node.inputs.map((input) => {
+            if (input.link == null) return input;
+            if (modelMoved.has(input.link) || clipMoved.has(input.link)) return input;
+            return input;
+          });
+          return nextInputs === node.inputs ? node : { ...node, inputs: nextInputs };
+        });
+
+        newNode.inputs[0] = { ...newNode.inputs[0], link: modelBridgeId };
+        newNode.inputs[1] = { ...newNode.inputs[1], link: clipBridgeId };
+        newNode.outputs[0] = { ...newNode.outputs[0], links: Array.from(modelMoved) };
+        newNode.outputs[1] = { ...newNode.outputs[1], links: Array.from(clipMoved) };
+        nextNodes.push(newNode);
+
+        const nextMobileLayout = insertNodeAfterInLayout(
+          mobileLayout,
+          plan.anchorNodeId,
+          newId,
+          scope.subgraphId,
+        );
+        const reconciled = reconcilePointerRegistry(
+          nextMobileLayout,
+          itemKeyByPointer,
+          pointerByHierarchicalKey,
+        );
+        const patchedWorkflow = {
+          ...scope.applyPatch(workflow, {
+            nodes: nextNodes,
+            links: scope.subgraphId == null
+              ? (nextLinks as WorkflowLink[])
+              : (nextLinks as WorkflowSubgraphLink[]),
+            last_link_id: nextLastLinkId,
+          }),
+          last_node_id: newId,
+        };
+        const nextWorkflowWithHierarchicalKeys = annotateWorkflowWithHierarchicalKeys(
+          patchedWorkflow,
+          reconciled.layoutToStable,
+        );
+        set({
+          workflow: nextWorkflowWithHierarchicalKeys,
+          mobileLayout: nextMobileLayout,
+          itemKeyByPointer: reconciled.layoutToStable,
+          pointerByHierarchicalKey: reconciled.stableToLayout,
+        });
+        return newId;
+      };
+
+      const setLoraExecutionMode: WorkflowState["setLoraExecutionMode"] = (mode) => {
+        const { workflow } = get();
+        if (!workflow) return;
+        const currentExtra = workflow.extra ?? {};
+        const currentMobile = getWorkflowMobileExtra(workflow);
+        set({
+          workflow: {
+            ...workflow,
+            extra: {
+              ...currentExtra,
+              comfyMobile: {
+                ...currentMobile,
+                loraMode: mode,
+              },
+            },
+          },
+        });
+      };
+
       const addGroupNearNode: WorkflowState["addGroupNearNode"] = (
         nearNodeHierarchicalKey,
       ) => {
@@ -3153,7 +3981,23 @@ export const useWorkflowStore = create<WorkflowState>()(
           return { ...n, mode: newMode };
         });
         const nextWorkflow = scope.applyPatch(workflow, { nodes: nextNodes });
-        set({ workflow: nextWorkflow });
+        const nextExtra = isLoraModeNode(node.type)
+          ? {
+              ...getWorkflowMobileExtra(nextWorkflow),
+              loraMode: "fast" as LoraExecutionMode,
+            }
+          : null;
+        set({
+          workflow: nextExtra
+            ? {
+                ...nextWorkflow,
+                extra: {
+                  ...(nextWorkflow.extra ?? {}),
+                  comfyMobile: nextExtra,
+                },
+              }
+            : nextWorkflow,
+        });
       };
 
       const scrollToNode: WorkflowState["scrollToNode"] = (
@@ -3378,6 +4222,7 @@ export const useWorkflowStore = create<WorkflowState>()(
           if (promptChanged) {
             nextState.executionStartTime = now;
             nextState.currentNodeStartTime = now;
+            nextState.executionCompletedNodeIds = {};
           }
 
           if (
@@ -3396,6 +4241,21 @@ export const useWorkflowStore = create<WorkflowState>()(
           }
 
           return nextState;
+        });
+      };
+
+      const markExecutionNodeComplete: WorkflowState["markExecutionNodeComplete"] = (nodeId) => {
+        if (nodeId == null) return;
+        const key = String(nodeId).trim();
+        if (!key) return;
+        set((state) => {
+          if (state.executionCompletedNodeIds[key]) return {};
+          return {
+            executionCompletedNodeIds: {
+              ...state.executionCompletedNodeIds,
+              [key]: true,
+            },
+          };
         });
       };
 
@@ -3626,10 +4486,12 @@ export const useWorkflowStore = create<WorkflowState>()(
             reconciled.layoutToStable,
             reconciled.stableToLayout,
           );
-          const defaultCollapsedItems: Record<string, boolean> = {};
           const restoredWorkflowWithHierarchicalKeys = annotateWorkflowWithHierarchicalKeys(
             finalWorkflow,
             reconciled.layoutToStable,
+          );
+          const defaultCollapsedItems = buildCompactDefaultCollapsedItems(
+            restoredWorkflowWithHierarchicalKeys,
           );
           finalWorkflow = restoredWorkflowWithHierarchicalKeys;
 
@@ -3689,7 +4551,6 @@ export const useWorkflowStore = create<WorkflowState>()(
             normalizedHiddenNodes,
             reconciled.layoutToStable,
           );
-          const defaultCollapsedItems: Record<string, boolean> = {};
           const carriedCollapsedItems = shouldCarryFoldState
             ? normalizePointerCollapsedRecord(
                 currentState.collapsedItems,
@@ -3707,6 +4568,9 @@ export const useWorkflowStore = create<WorkflowState>()(
               finalWorkflow,
               reconciled.layoutToStable,
             );
+          const defaultCollapsedItems = buildCompactDefaultCollapsedItems(
+            normalizedWorkflowWithHierarchicalKeys,
+          );
           set({
             workflowSource: source,
             workflow: normalizedWorkflowWithHierarchicalKeys,
@@ -5224,16 +6088,33 @@ export const useWorkflowStore = create<WorkflowState>()(
             // Embed the canonical workflow (not expanded) so desktop ComfyUI can reload it correctly.
             // Run validateAndNormalizeWorkflow to repair any stale SubgraphIO.linkIds before embedding.
             const queuedWorkflow = validateAndNormalizeWorkflow(stripWorkflowClientMetadata(currentWorkflow));
+            const encryptedQueuedWorkflow = await encryptWorkflowForStorage(queuedWorkflow);
+            const loraMode = getWorkflowLoraMode(currentWorkflow);
+            const effectiveLoraMode: LoraExecutionMode =
+              loraMode === "cached" && (
+                workflowHasBypassedLoraNodes(currentWorkflow) ||
+                workflowHasBypassedLoraNodes(expandedForQueue)
+              )
+                ? "fast"
+                : loraMode;
+            const disabledLoraNames = collectBypassedLoraNames([currentWorkflow, expandedForQueue]);
+            const promptForQueueBeforeDisabledLoraRemoval = effectiveLoraMode === "optimizer"
+              ? prompt as ApiPrompt
+              : rewriteSlowLoraOptimizerNodesForQueue(prompt as ApiPrompt, effectiveLoraMode, getAvailableLoraNames(nodeTypes));
+            const promptForQueue = removeDisabledLorasFromPrompt(
+              promptForQueueBeforeDisabledLoraRemoval,
+              disabledLoraNames,
+            );
             const previewMethod = useGenerationSettingsStore.getState().previewMethod;
             const response = await fetch('/api/prompt', {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                prompt,
+                prompt: promptForQueue,
                 client_id: api.clientId,
                 extra_data: {
                   extra_pnginfo: {
-                    workflow: queuedWorkflow,
+                    workflow: encryptedQueuedWorkflow,
                   },
                   ...(previewMethod !== 'none' ? { preview_method: previewMethod } : {}),
                 },
@@ -5324,6 +6205,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         executingNodePath: null,
         executingPromptId: null,
         progress: 0,
+        executionCompletedNodeIds: {},
         expandedNodeIdMap: {},
         expandedNodePathMap: {},
         executionStartTime: null,
@@ -5355,6 +6237,9 @@ export const useWorkflowStore = create<WorkflowState>()(
 
         // Workflow editing related
         addNode,
+        duplicateNodeAfter,
+        insertLoraNodeDynamic,
+        setLoraExecutionMode,
         addGroupNearNode,
         addNodeAndConnect,
         deleteNode,
@@ -5384,6 +6269,7 @@ export const useWorkflowStore = create<WorkflowState>()(
 
         // Execution related
         setExecutionState,
+        markExecutionNodeComplete,
         addPromptOutputs,
         clearPromptOutputs,
         queueWorkflow,

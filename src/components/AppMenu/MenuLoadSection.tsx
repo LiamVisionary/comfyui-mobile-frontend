@@ -1,4 +1,4 @@
-import { CaretDownIcon, ClipboardDownloadIcon, ClockIcon, FolderIcon, TemplateIcon, WorkflowIcon } from '@/components/icons';
+import { CaretDownIcon, ClipboardDownloadIcon, ClockIcon, FolderIcon, TemplateIcon, WorkflowIcon, BookmarkOutlineIcon } from '@/components/icons';
 
 interface MenuLoadSectionProps {
   open: boolean;
@@ -8,6 +8,7 @@ interface MenuLoadSectionProps {
   onFileChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onLoadFromFile: () => void;
   onOpenRecent: () => void;
+  onOpenFavoriteWorkflows: () => void;
   onOpenUserWorkflows: () => void;
   onOpenTemplates: () => void;
   onOpenPasteJson: () => void;
@@ -21,6 +22,7 @@ export function MenuLoadSection({
   onFileChange,
   onLoadFromFile,
   onOpenRecent,
+  onOpenFavoriteWorkflows,
   onOpenUserWorkflows,
   onOpenTemplates,
   onOpenPasteJson,
@@ -53,6 +55,16 @@ export function MenuLoadSection({
           >
             <ClockIcon className="w-6 h-6 text-gray-600" />
             <span className="font-medium text-gray-900">Recent</span>
+            <span className="ml-auto text-gray-400">&rarr;</span>
+          </button>
+
+          <button
+            onClick={onOpenFavoriteWorkflows}
+            className="w-full flex items-center gap-3 p-4 bg-white border border-gray-200
+                       rounded-xl text-left hover:bg-gray-50 min-h-[56px]"
+          >
+            <BookmarkOutlineIcon className="w-6 h-6 text-gray-600" />
+            <span className="font-medium text-gray-900">Favorite Workflows</span>
             <span className="ml-auto text-gray-400">&rarr;</span>
           </button>
 
