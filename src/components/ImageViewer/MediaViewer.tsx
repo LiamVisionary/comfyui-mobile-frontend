@@ -64,6 +64,14 @@ function getFullScreenImageSrc(item: ViewerImage): string {
   return /\.jpe?g(?:$|[?#])/i.test(name) ? item.src : (item.displaySrc ?? item.src);
 }
 
+function getViewerItemKey(item: ViewerImage): string {
+  return item.file?.id
+    ?? item.file?.fullUrl
+    ?? item.displaySrc
+    ?? item.src
+    ?? `${item.mediaType || ''}:${item.filename || item.alt || ''}`;
+}
+
 function isViewerVideo(item: ViewerImage): boolean {
   const name = item.filename ?? item.file?.name ?? item.alt ?? item.src ?? '';
   return Boolean(
@@ -136,6 +144,7 @@ export function MediaViewer({
   const [workflowAvailableById, setWorkflowAvailableById] = useState<Record<string, boolean>>({});
   const [workflowLoadingById, setWorkflowLoadingById] = useState<Record<string, boolean>>({});
   const [videoError, setVideoError] = useState(false);
+  const [imageError, setImageError] = useState(false);
   // Pixel resolution of the currently displayed media, shown under the filename.
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   // Full-screen image srcs that have finished decoding at least once (current
@@ -160,7 +169,41 @@ export function MediaViewer({
   const pinOverlayOpen = usePinnedWidgetStore((s) => s.pinOverlayOpen);
   const togglePinOverlay = usePinnedWidgetStore((s) => s.togglePinOverlay);
 
-  const currentItem = index >= 0 ? (items[index] ?? items[0] ?? null) : null;
+  const lockedItemRef = useRef<{ index: number; key: string; item: ViewerImage } | null>(null);
+  const previousOpenRef = useRef(false);
+  const previousIndexRef = useRef(index);
+
+  const rawCurrentItem = index >= 0 ? (items[index] ?? items[0] ?? null) : null;
+  let currentItem = rawCurrentItem;
+  if (!open) {
+    lockedItemRef.current = null;
+  } else {
+    const shouldLockFromProps =
+      !previousOpenRef.current
+      || previousIndexRef.current !== index
+      || !lockedItemRef.current;
+    if (shouldLockFromProps) {
+      if (rawCurrentItem) {
+        lockedItemRef.current = { index, key: getViewerItemKey(rawCurrentItem), item: rawCurrentItem };
+      } else {
+        lockedItemRef.current = null;
+      }
+    } else if (lockedItemRef.current) {
+      const locked = lockedItemRef.current;
+      const stillPresent = items.find((item) => getViewerItemKey(item) === locked.key);
+      if (stillPresent) {
+        currentItem = stillPresent;
+        lockedItemRef.current = { ...locked, item: stillPresent };
+      } else if (rawCurrentItem) {
+        lockedItemRef.current = { index, key: getViewerItemKey(rawCurrentItem), item: rawCurrentItem };
+      } else {
+        lockedItemRef.current = null;
+      }
+    }
+  }
+  previousOpenRef.current = open;
+  previousIndexRef.current = index;
+
   const isVideo = Boolean(currentItem && isViewerVideo(currentItem));
 
   // Double-buffered display: keep the previously rendered item visible until the
@@ -527,6 +570,7 @@ export function MediaViewer({
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setVideoError(false);
+    setImageError(false);
     // Clear the resolution subtitle until the new media reports its dimensions.
     setNaturalSize(null);
   }, [renderItem?.src]);
@@ -1168,6 +1212,10 @@ export function MediaViewer({
                 className="w-full h-auto block select-none relative"
                 draggable={false}
                 onLoad={handleImageLoad}
+                onError={() => {
+                  if (renderItem) markLoaded(getFullScreenImageSrc(renderItem));
+                  setImageError(true);
+                }}
                 style={{
                   transform: `translate3d(${getBaseOffset(scale).x + translate.x}px, ${getBaseOffset(scale).y + translate.y}px, 0) scale(${scale})`,
                   transformOrigin: 'top left',
@@ -1176,6 +1224,18 @@ export function MediaViewer({
                   WebkitBackfaceVisibility: 'hidden',
                 }}
               />
+            )}
+            {imageError && (
+              <div className="absolute inset-0 z-[3] flex flex-col items-center justify-center bg-black text-center text-white">
+                <div className="text-sm font-medium">Unable to load this preview.</div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="mt-4 rounded-full bg-white/15 px-4 py-2 text-sm font-medium text-white hover:bg-white/25"
+                >
+                  Close preview
+                </button>
+              </div>
             )}
           </>
         )}
