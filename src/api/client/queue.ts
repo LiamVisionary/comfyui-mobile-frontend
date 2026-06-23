@@ -257,6 +257,19 @@ function nativeRecordToImages(item: Record<string, unknown>): HistoryOutputImage
     });
 }
 
+function nativeHistoryPrompt(item: Record<string, unknown>, id: string): [number, string, Record<string, unknown>, Record<string, unknown>, string[]] {
+  const raw = item.comfy_prompt ?? item.prompt_tuple;
+  if (Array.isArray(raw) && raw.length >= 5) {
+    return raw as [number, string, Record<string, unknown>, Record<string, unknown>, string[]];
+  }
+  const workflow = item.workflow;
+  const extra: Record<string, unknown> = { backend: item.backend || 'native-mlx' };
+  if (workflow && typeof workflow === 'object' && !Array.isArray(workflow)) {
+    extra.extra_pnginfo = { workflow };
+  }
+  return [0, id, {}, extra, []];
+}
+
 function nativeRecordsToHistory(records: Array<Record<string, unknown>>): History {
   const history: History = {};
   for (const item of records) {
@@ -266,7 +279,7 @@ function nativeRecordsToHistory(records: Array<Record<string, unknown>>): Histor
     const finished = Date.parse(String(item?.finished_at || '')) || created;
     const isError = item?.status === 'error' || item?.status === 'failed';
     history[id] = {
-      prompt: [0, id, {}, {}, []],
+      prompt: nativeHistoryPrompt(item, id),
       outputs: { native_mlx: { images: nativeRecordToImages(item) } },
       status: {
         status_str: isError ? 'error' : 'success',

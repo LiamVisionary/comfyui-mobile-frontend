@@ -183,7 +183,7 @@ export interface HistoryOutput {
 }
 
 export interface HistoryItem {
-  prompt: [number, string, Record<string, unknown>, Record<string, string>, string[]];
+  prompt: [number, string, Record<string, unknown>, Record<string, unknown>, string[]];
   outputs: Record<string, HistoryOutput>;
   status?: {
     status_str: string;
