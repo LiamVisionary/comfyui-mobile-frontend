@@ -34,6 +34,7 @@ _is_within_dir = _file_utils.is_within_dir
 _safe_join = _file_utils.safe_join
 resolve_metadata_path = _mobile_metadata.resolve_metadata_path
 extract_workflow_from_metadata = _mobile_metadata.extract_workflow_from_metadata
+extract_loadable_workflow_from_metadata = _mobile_metadata.extract_loadable_workflow_from_metadata
 get_cached_prompt_text = _mobile_metadata.get_cached_prompt_text
 MetadataPathError = _mobile_metadata.MetadataPathError
 build_restart_exec_args = _restart_utils.build_restart_exec_args
@@ -329,7 +330,7 @@ def setup_mobile_route():
 
             loop = asyncio.get_event_loop()
             metadata = await loop.run_in_executor(None, _read_pnginfo_metadata, metadata_path)
-            workflow = extract_workflow_from_metadata(metadata)
+            workflow = extract_loadable_workflow_from_metadata(metadata)
 
             if not workflow:
                 return web.json_response({"error": "No workflow metadata found"}, status=404)
@@ -353,7 +354,7 @@ def setup_mobile_route():
 
             loop = asyncio.get_event_loop()
             metadata = await loop.run_in_executor(None, _read_pnginfo_metadata, metadata_path)
-            workflow = extract_workflow_from_metadata(metadata)
+            workflow = extract_loadable_workflow_from_metadata(metadata)
             return web.json_response({"available": bool(workflow)})
         except MetadataPathError as e:
             return web.json_response({"error": str(e)}, status=e.status_code)

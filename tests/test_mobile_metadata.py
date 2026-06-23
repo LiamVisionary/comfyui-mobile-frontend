@@ -5,7 +5,9 @@ import pytest
 
 from mobile_metadata import (
     MetadataPathError,
+    extract_loadable_workflow_from_metadata,
     extract_workflow_from_metadata,
+    prompt_to_fallback_workflow,
     resolve_metadata_path,
 )
 
@@ -79,3 +81,26 @@ def test_extract_workflow_from_metadata_reads_prompt_fallback():
 
     workflow = extract_workflow_from_metadata(metadata)
     assert workflow == {"id": "workflow-from-prompt"}
+
+
+def test_prompt_only_metadata_builds_loadable_fallback_workflow():
+    prompt = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "model.safetensors"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": "hello"}},
+        "3_sampler": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": ["2", 0], "steps": 4}},
+    }
+    metadata = {"prompt": json.dumps(prompt)}
+
+    workflow = extract_loadable_workflow_from_metadata(metadata)
+
+    assert workflow is not None
+    assert workflow["extra"]["source"] == "embedded_api_prompt_fallback"
+    assert len(workflow["nodes"]) == 3
+    assert workflow["last_link_id"] == 3
+    sampler = next(node for node in workflow["nodes"] if node["type"] == "KSampler")
+    assert sampler["properties"]["api_prompt_id"] == "3_sampler"
+    assert sampler["widgets_values"]["steps"] == 4
+
+
+def test_prompt_to_fallback_workflow_rejects_empty_prompt():
+    assert prompt_to_fallback_workflow({}) is None

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 from typing import Any
@@ -149,3 +151,125 @@ def extract_workflow_from_metadata(metadata: dict[str, Any]) -> Any | None:
         or prompt_data.get('workflow')
         or prompt_data.get('workflow_v2')
     )
+
+
+# --- Prompt-only Comfy image fallback ---------------------------------------
+
+def _is_prompt_link(value: Any, node_ids: set[str]) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) >= 2
+        and isinstance(value[0], (str, int))
+        and isinstance(value[1], int)
+        and str(value[0]) in node_ids
+    )
+
+
+def prompt_to_fallback_workflow(prompt_data: Any) -> Any | None:
+    """Build a minimal LiteGraph workflow from embedded Comfy API prompt JSON.
+
+    Older Comfy outputs can contain only the API prompt (class_type + input
+    graph) and no `workflow` canvas JSON. Mobile's Outputs "Load workflow" path
+    expects LiteGraph workflow JSON, so synthesize a compatible graph without
+    decoding pixels or logging prompt text.
+    """
+    if not isinstance(prompt_data, dict):
+        return None
+    api_nodes = {str(k): v for k, v in prompt_data.items() if isinstance(v, dict)}
+    if not api_nodes:
+        return None
+
+    node_ids = set(api_nodes.keys())
+    id_map: dict[str, int] = {}
+    used: set[int] = set()
+    next_id = 1
+    for raw_id in api_nodes:
+        try:
+            numeric = int(raw_id)
+        except Exception:
+            numeric = 0
+        if numeric > 0 and numeric not in used:
+            id_map[raw_id] = numeric
+            used.add(numeric)
+            next_id = max(next_id, numeric + 1)
+        else:
+            while next_id in used:
+                next_id += 1
+            id_map[raw_id] = next_id
+            used.add(next_id)
+            next_id += 1
+
+    links: list[list[Any]] = []
+    outputs_by_node: dict[str, dict[int, list[int]]] = {raw_id: {} for raw_id in api_nodes}
+    pending_inputs: dict[str, list[dict[str, Any]]] = {raw_id: [] for raw_id in api_nodes}
+    link_id = 1
+    for raw_id, node in api_nodes.items():
+        inputs = node.get('inputs') if isinstance(node.get('inputs'), dict) else {}
+        input_slot = 0
+        for name, value in inputs.items():
+            if _is_prompt_link(value, node_ids):
+                src_raw = str(value[0])
+                src_slot = int(value[1])
+                dst_id = id_map[raw_id]
+                src_id = id_map[src_raw]
+                links.append([link_id, src_id, src_slot, dst_id, input_slot, '*'])
+                pending_inputs[raw_id].append({'name': str(name), 'type': '*', 'link': link_id})
+                outputs_by_node.setdefault(src_raw, {}).setdefault(src_slot, []).append(link_id)
+                link_id += 1
+                input_slot += 1
+
+    nodes: list[dict[str, Any]] = []
+    cols = 4
+    for index, (raw_id, node) in enumerate(api_nodes.items()):
+        inputs = node.get('inputs') if isinstance(node.get('inputs'), dict) else {}
+        scalar_inputs = {str(k): v for k, v in inputs.items() if not _is_prompt_link(v, node_ids)}
+        node_outputs = [
+            {'name': str(slot), 'type': '*', 'links': slot_links, 'slot_index': slot}
+            for slot, slot_links in sorted(outputs_by_node.get(raw_id, {}).items())
+        ]
+        nodes.append({
+            'id': id_map[raw_id],
+            'type': str(node.get('class_type') or raw_id),
+            'pos': [(index % cols) * 360, (index // cols) * 220],
+            'size': [320, 160],
+            'flags': {},
+            'order': index,
+            'mode': 0,
+            'inputs': pending_inputs.get(raw_id, []),
+            'outputs': node_outputs,
+            'properties': {
+                'api_prompt_id': raw_id,
+                'api_prompt_inputs': scalar_inputs,
+            },
+            'widgets_values': scalar_inputs,
+        })
+
+    return {
+        'last_node_id': max(id_map.values()) if id_map else 0,
+        'last_link_id': link_id - 1,
+        'nodes': nodes,
+        'links': links,
+        'groups': [],
+        'config': {},
+        'extra': {'source': 'embedded_api_prompt_fallback'},
+        'version': 0.4,
+    }
+
+
+def extract_prompt_from_metadata(metadata: dict[str, Any]) -> Any | None:
+    prompt_value = metadata.get('prompt') or metadata.get('Prompt')
+    if isinstance(prompt_value, bytes):
+        prompt_value = prompt_value.decode('utf-8', errors='ignore')
+    if not prompt_value:
+        return None
+    try:
+        return json.loads(prompt_value) if isinstance(prompt_value, str) else prompt_value
+    except Exception:
+        return None
+
+
+def extract_loadable_workflow_from_metadata(metadata: dict[str, Any]) -> Any | None:
+    workflow = extract_workflow_from_metadata(metadata)
+    if workflow:
+        return workflow
+    return prompt_to_fallback_workflow(extract_prompt_from_metadata(metadata))
