@@ -191,7 +191,7 @@ describe('MediaViewer workflow availability', () => {
     );
   });
 
-  it('continues using fast previews for non-JPEG images', async () => {
+  it('uses the original image for non-JPEG fullscreen detail instead of the blurred preview', async () => {
     const item = makeImageItem('output/generated.png', 'generated.png');
     item.displaySrc = 'http://example.local/generated.png?preview=webp;90';
 
@@ -211,7 +211,7 @@ describe('MediaViewer workflow availability', () => {
     });
 
     expect(document.querySelector<HTMLImageElement>('#media-viewer-overlay img')?.src).toBe(
-      item.displaySrc,
+      item.src,
     );
   });
 
@@ -263,7 +263,7 @@ describe('MediaViewer workflow availability', () => {
     expect(preloadedSources).toEqual(expect.arrayContaining([
       leftFar.src,
       leftNear.src,
-      rightNear.displaySrc,
+      rightNear.src,
       rightFar.src,
     ]));
     expect(preloadedSources).not.toContain(current.src);

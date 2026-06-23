@@ -5449,7 +5449,7 @@ export const useWorkflowStore = create<WorkflowState>()(
 
             // Record which session owns this prompt_id for websocket routing.
             try {
-              const okData = (await response.json()) as { prompt_id?: string };
+              const okData = (await response.json()) as { prompt_id?: string; native_mlx?: boolean };
               const promptId = okData?.prompt_id;
               if (promptId && sid) {
                 // Prompts still in the backend queue must keep their routing
@@ -5479,6 +5479,15 @@ export const useWorkflowStore = create<WorkflowState>()(
               }
               if (promptId) {
                 useQueueStore.getState().registerLocalPrompt(promptId);
+                if (okData.native_mlx) {
+                  const nativeOutputNodeIds = Object.entries(queuedPrompt)
+                    .filter(([, value]) => {
+                      const classType = String((value as { class_type?: unknown })?.class_type || '').toLowerCase();
+                      return classType.includes('saveimage') || classType.includes('previewimage');
+                    })
+                    .map(([nodeId]) => nodeId);
+                  void api.pollNativeMlxJobUntilComplete(promptId, { outputNodeIds: nativeOutputNodeIds });
+                }
                 useQueueStore.getState().recordQueuedPrompt(promptId, promptRequest, {
                   sessionId: sid,
                 });

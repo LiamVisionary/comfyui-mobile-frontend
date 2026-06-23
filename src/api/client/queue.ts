@@ -23,6 +23,15 @@ type NativeMlxQueueCandidate = {
   guidance?: number;
 };
 
+type NativeMlxCompletionDetail = {
+  promptId: string;
+  elapsedSeconds?: number;
+  status?: string;
+  error?: string;
+  images?: HistoryOutputImage[];
+  outputNodeIds?: string[];
+};
+
 function nativeApiUrl(path: string): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     return new URL(path, window.location.origin).toString();
@@ -120,7 +129,30 @@ export function detectNativeMlxBigLoveKlein3(prompt: Record<string, unknown>): N
   return { imagePath, prompt: promptText, negativePrompt, steps, seed, width, height, guidance };
 }
 
-async function pollNativeMlxJobUntilComplete(promptId: string): Promise<void> {
+function nativeJobImages(job: { outputs?: unknown; image_urls?: unknown; id?: unknown }): HistoryOutputImage[] {
+  const fromOutputs = Array.isArray(job.outputs)
+    ? job.outputs.map((outputPath) => String(outputPath || '')).filter(Boolean)
+    : [];
+  const fromUrls = Array.isArray(job.image_urls)
+    ? job.image_urls.map((url) => String(url || '')).filter(Boolean)
+    : [];
+  const id = String(job.id || 'native');
+  const paths = fromOutputs.length > 0 ? fromOutputs : fromUrls;
+  return paths.map((value, index) => {
+    const bare = value.split('?')[0] || '';
+    const filename = bare.split('/').pop() || `${id}-${index}.png`;
+    const image: HistoryOutputImage = { filename, subfolder: '', type: 'output' };
+    if (value.startsWith('/image/') || value.startsWith('http://') || value.startsWith('https://')) {
+      image.fullUrl = value;
+    }
+    return image;
+  });
+}
+
+export async function pollNativeMlxJobUntilComplete(
+  promptId: string,
+  options: { outputNodeIds?: string[] } = {},
+): Promise<void> {
   const startedAt = Date.now();
   const deadline = startedAt + 10 * 60 * 1000;
   while (Date.now() < deadline) {
@@ -128,21 +160,25 @@ async function pollNativeMlxJobUntilComplete(promptId: string): Promise<void> {
     try {
       const response = await fetch(nativeApiUrl(nativeApiPath('job', encodeURIComponent(promptId))), { cache: 'no-store' });
       if (!response.ok) continue;
-      const job = await response.json().catch(() => null) as {
+      const job = await response.json().catch(() => null) as ({
+        id?: unknown;
         status?: string;
         elapsed_seconds?: number;
         error?: string;
-      } | null;
+        outputs?: unknown;
+        image_urls?: unknown;
+      } | null);
       const status = String(job?.status || '');
       if (status === 'success' || status === 'error' || status === 'failed') {
-        window.dispatchEvent(new CustomEvent('native-mlx-job-complete', {
-          detail: {
-            promptId,
-            elapsedSeconds: Number(job?.elapsed_seconds) || (Date.now() - startedAt) / 1000,
-            status,
-            error: job?.error,
-          },
-        }));
+        const detail: NativeMlxCompletionDetail = {
+          promptId,
+          elapsedSeconds: Number(job?.elapsed_seconds) || (Date.now() - startedAt) / 1000,
+          status,
+          error: job?.error,
+          images: job ? nativeJobImages(job) : [],
+          outputNodeIds: options.outputNodeIds ?? [],
+        };
+        window.dispatchEvent(new CustomEvent('native-mlx-job-complete', { detail }));
         return;
       }
     } catch {
@@ -297,6 +333,7 @@ export interface PromptQueueRequest {
 export interface PromptQueueResponse {
   prompt_id?: string;
   number?: number;
+  native_mlx?: boolean;
 }
 
 export async function queuePrompt(

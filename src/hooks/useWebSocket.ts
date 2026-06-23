@@ -167,10 +167,67 @@ export function useWebSocket() {
         promptId?: string;
         elapsedSeconds?: number;
         status?: string;
+        images?: HistoryOutputImage[];
+        outputNodeIds?: string[];
       }>).detail;
       const promptId = detail?.promptId;
       if (!promptId) return;
+      const images = detail.images ?? [];
       const actions = storeActionsRef.current;
+      if (images.length > 0) {
+        const workflowState = useWorkflowStore.getState();
+        const sessionId = workflowState.promptToSession[promptId] ?? workflowState.activeSessionId;
+        const parked = sessionId && sessionId !== workflowState.activeSessionId
+          ? workflowState.parkedSessions[sessionId]
+          : null;
+        const workflow = parked?.workflow ?? workflowState.workflow;
+        const expandedNodeIdMap = parked?.expandedNodeIdMap ?? workflowState.expandedNodeIdMap;
+        const outputNodeIds = detail.outputNodeIds ?? [];
+        const itemKeys = new Set<string>();
+        for (const rawNodeId of outputNodeIds) {
+          const id = String(rawNodeId);
+          const mapped = expandedNodeIdMap[id];
+          if (mapped) itemKeys.add(mapped);
+          const numeric = Number(id);
+          if (Number.isFinite(numeric)) {
+            const node = workflow?.nodes.find((n) => n.id === numeric);
+            if (node?.itemKey) itemKeys.add(node.itemKey);
+          }
+        }
+        for (const key of itemKeys) {
+          actions.setNodeOutput(key, images, sessionId ?? null);
+        }
+        if (outputNodeIds.length > 0) {
+          useWorkflowStore.setState((state) => {
+            const targetSessionId = sessionId ?? state.activeSessionId;
+            const rawUpdates = Object.fromEntries(outputNodeIds.map((nodeId) => [String(nodeId), images]));
+            if (targetSessionId && targetSessionId !== state.activeSessionId && state.parkedSessions[targetSessionId]) {
+              const parked = state.parkedSessions[targetSessionId];
+              return {
+                parkedSessions: {
+                  ...state.parkedSessions,
+                  [targetSessionId]: {
+                    ...parked,
+                    nodeOutputs: {
+                      ...parked.nodeOutputs,
+                      ...rawUpdates,
+                    },
+                  },
+                },
+              };
+            }
+            return {
+              nodeOutputs: {
+                ...state.nodeOutputs,
+                ...rawUpdates,
+              },
+            };
+          });
+        }
+        actions.addLivePromptOutputs(promptId, images);
+        actions.addPromptOutputs(promptId, images, sessionId ?? null);
+        refreshOutputsPanelIfMatched(images);
+      }
       actions.markPromptCompleting(promptId, detail.elapsedSeconds);
       actions.removeRunning(promptId);
       void actions.fetchQueue();

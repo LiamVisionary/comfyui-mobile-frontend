@@ -60,8 +60,11 @@ function isEditableElement(element: HTMLElement | null): boolean {
 }
 
 function getFullScreenImageSrc(item: ViewerImage): string {
-  const name = item.filename ?? item.file?.name ?? item.src;
-  return /\.jpe?g(?:$|[?#])/i.test(name) ? item.src : (item.displaySrc ?? item.src);
+  // Fullscreen/detail view must use the original media URL. `displaySrc` is a
+  // downscaled/optimized preview used for thumbnails and fast initial lists; using
+  // it here makes Outputs fullscreen look blurry even though the original file is
+  // sharp.
+  return item.src;
 }
 
 function getViewerItemKey(item: ViewerImage): string {

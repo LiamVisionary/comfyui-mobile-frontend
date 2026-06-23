@@ -544,6 +544,45 @@ describe('orphaned closed-tab run routing', () => {
     });
   }
 
+  it('paints native MLX completion images onto the real SaveImage node', async () => {
+    useWorkflowStore.setState({
+      promptToSession: { native1: 'active' },
+      workflow: {
+        nodes: [{ id: 5, type: 'SaveImage', itemKey: 'root/node:5' }],
+        links: [],
+        groups: [],
+        config: {},
+        version: 1,
+        last_node_id: 5,
+        last_link_id: 0,
+      } as never,
+      expandedNodeIdMap: {},
+      nodeOutputs: {},
+      promptOutputs: {},
+    });
+    await mount();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('native-mlx-job-complete', {
+        detail: {
+          promptId: 'native1',
+          elapsedSeconds: 3.1,
+          status: 'success',
+          outputNodeIds: ['5'],
+          images: [{ filename: 'native.png', subfolder: '', type: 'output' }],
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(useWorkflowStore.getState().nodeOutputs['5']).toMatchObject([
+      { filename: 'native.png', type: 'output' },
+    ]);
+    expect(useQueueStore.getState().livePromptOutputs.native1).toMatchObject([
+      { filename: 'native.png', type: 'output' },
+    ]);
+  });
+
   it('keeps live outputs and re-enqueues across an infinite-loop completion', async () => {
     const queueWorkflow = vi.fn();
     useGenerationSettingsStore.setState({ infiniteModeEnabled: true });
