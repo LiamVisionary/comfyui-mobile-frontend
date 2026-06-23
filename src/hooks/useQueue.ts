@@ -97,6 +97,11 @@ export interface QueueState {
   interrupt: () => Promise<void>;
   updateFromStatus: (queueRemaining: number) => void;
   registerLocalPrompt: (promptId: string) => void;
+  markNativePromptRunning: (
+    promptId: string,
+    request: { prompt: Record<string, unknown>; extra_data?: Record<string, unknown> },
+    options?: { number?: number; outputsToExecute?: string[]; sessionId?: string | null },
+  ) => void;
   addLivePromptOutputs: (promptId: string, images: HistoryOutputImage[]) => void;
   clearLivePromptOutputs: (promptId?: string) => void;
   markPromptCompleting: (promptId: string, durationSeconds?: number) => void;
@@ -214,7 +219,8 @@ export const useQueueStore = create<QueueState>()(
                 .map((item) => [item.prompt_id, item]),
             );
             for (const item of oldRunning) {
-              if (!activePromptIds.has(item.prompt_id)) {
+              const shadow = shadowQueueJobs[item.prompt_id];
+              if (!activePromptIds.has(item.prompt_id) && shadow?.status !== 'running') {
                 completingById.set(item.prompt_id, item);
               }
             }
@@ -259,8 +265,21 @@ export const useQueueStore = create<QueueState>()(
               }
             }
             const completing = Array.from(completingById.values());
+            const runningWithNative = [...running];
+            const runningIds = new Set(runningWithNative.map((item) => item.prompt_id));
+            for (const shadow of Object.values(shadowQueueJobs)) {
+              if (shadow.status !== 'running' || runningIds.has(shadow.originalPromptId)) continue;
+              if (completingById.has(shadow.originalPromptId)) continue;
+              runningWithNative.push({
+                number: shadow.number ?? 0,
+                prompt_id: shadow.originalPromptId,
+                prompt: shadow.prompt ?? {},
+                extra: shadow.extraData ?? {},
+                outputs_to_execute: shadow.outputsToExecute ?? [],
+              });
+            }
             return {
-              running: sameQueueItems(state.running, running) ? state.running : running,
+              running: sameQueueItems(state.running, runningWithNative) ? state.running : runningWithNative,
               pending: sameQueueItems(state.pending, pending) ? state.pending : pending,
               completing: sameQueueItems(state.completing, completing)
                 ? state.completing
@@ -374,6 +393,36 @@ export const useQueueStore = create<QueueState>()(
         }));
       },
 
+      markNativePromptRunning: (promptId, request, options = {}) => {
+        if (!promptId) return;
+        set((state) => {
+          const item: QueueItem = {
+            number: options.number ?? 0,
+            prompt_id: promptId,
+            prompt: request.prompt ?? {},
+            extra: request.extra_data ?? {},
+            outputs_to_execute: options.outputsToExecute ?? [],
+          };
+          const running = state.running.some((existing) => existing.prompt_id === promptId)
+            ? state.running
+            : [...state.running, item];
+          const shadowQueueJobs = {
+            ...state.shadowQueueJobs,
+            [promptId]: {
+              originalPromptId: promptId,
+              prompt: item.prompt,
+              extraData: item.extra,
+              outputsToExecute: item.outputs_to_execute,
+              number: item.number,
+              status: 'running' as const,
+              queuedAt: Date.now(),
+              sessionId: options.sessionId ?? null,
+            },
+          };
+          return { running, shadowQueueJobs };
+        });
+      },
+
       addLivePromptOutputs: (promptId, images) => {
         if (!promptId || images.length === 0) return;
         set((state) => {
@@ -458,6 +507,9 @@ export const useQueueStore = create<QueueState>()(
             completing: [...state.completing, item],
             completingStartedAt: { ...state.completingStartedAt, [promptId]: Date.now() },
             completionDurations: withDuration(state.completionDurations),
+            shadowQueueJobs: Object.fromEntries(
+              Object.entries(state.shadowQueueJobs).filter(([id]) => id !== promptId),
+            ),
           };
         });
       },

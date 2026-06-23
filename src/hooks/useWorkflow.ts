@@ -5116,6 +5116,7 @@ export const useWorkflowStore = create<WorkflowState>()(
           }));
         }
 
+        let queuedNativeMlx = false;
         try {
           await yieldToBrowserPaint();
 
@@ -5480,12 +5481,17 @@ export const useWorkflowStore = create<WorkflowState>()(
               if (promptId) {
                 useQueueStore.getState().registerLocalPrompt(promptId);
                 if (okData.native_mlx) {
+                  queuedNativeMlx = true;
                   const nativeOutputNodeIds = Object.entries(queuedPrompt)
                     .filter(([, value]) => {
                       const classType = String((value as { class_type?: unknown })?.class_type || '').toLowerCase();
                       return classType.includes('saveimage') || classType.includes('previewimage');
                     })
                     .map(([nodeId]) => nodeId);
+                  useQueueStore.getState().markNativePromptRunning(promptId, promptRequest, {
+                    outputsToExecute: nativeOutputNodeIds,
+                    sessionId: sid,
+                  });
                   void api.pollNativeMlxJobUntilComplete(promptId, { outputNodeIds: nativeOutputNodeIds });
                 }
                 useQueueStore.getState().recordQueuedPrompt(promptId, promptRequest, {
@@ -5582,8 +5588,14 @@ export const useWorkflowStore = create<WorkflowState>()(
             );
         } finally {
           // Keep the submit feedback visible until the queued prompt is
-          // observable, instead of flashing back to Run while queue sync lags.
-          await useQueueStore.getState().fetchQueue();
+          // observable. Native MLX jobs are represented by the local shadow
+          // running item immediately, so do not block the Run button on a Comfy
+          // queue poll that won't contain the native job.
+          if (queuedNativeMlx) {
+            void useQueueStore.getState().fetchQueue();
+          } else {
+            await useQueueStore.getState().fetchQueue();
+          }
           if (liveTarget() === "active") set({ isLoading: false });
           if (sid) {
             set((s) => {
