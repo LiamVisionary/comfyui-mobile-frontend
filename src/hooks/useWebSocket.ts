@@ -162,6 +162,34 @@ export function useWebSocket() {
   }, []);
 
   useEffect(() => {
+    const handleNativeMlxProgress = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        promptId?: string;
+        currentStep?: number;
+        totalSteps?: number;
+        overallPercent?: number;
+        currentStepPercent?: number;
+        phase?: string;
+      }>).detail;
+      const promptId = detail?.promptId;
+      if (!promptId) return;
+      const stepPercent = Math.min(100, Math.max(0, Math.round(Number(detail.currentStepPercent ?? 0))));
+      const overallPercent = Math.min(100, Math.max(0, Math.round(Number(detail.overallPercent ?? 0))));
+      useWorkflowStore.setState((state) => ({
+        isExecuting: true,
+        executingPromptId: promptId,
+        progress: stepPercent,
+        nativeOverallProgressByPrompt: {
+          ...state.nativeOverallProgressByPrompt,
+          [promptId]: overallPercent,
+        },
+        nativeStepProgressByPrompt: {
+          ...state.nativeStepProgressByPrompt,
+          [promptId]: stepPercent,
+        },
+      }));
+    };
+
     const handleNativeMlxComplete = (event: Event) => {
       const detail = (event as CustomEvent<{
         promptId?: string;
@@ -230,11 +258,31 @@ export function useWebSocket() {
       }
       actions.markPromptCompleting(promptId, detail.elapsedSeconds);
       actions.removeRunning(promptId);
+      useWorkflowStore.setState((state) => {
+        const nativeOverallProgressByPrompt = { ...state.nativeOverallProgressByPrompt };
+        const nativeStepProgressByPrompt = { ...state.nativeStepProgressByPrompt };
+        delete nativeOverallProgressByPrompt[promptId];
+        delete nativeStepProgressByPrompt[promptId];
+        return {
+          isExecuting: state.executingPromptId === promptId ? false : state.isExecuting,
+          executingPromptId: state.executingPromptId === promptId ? null : state.executingPromptId,
+          executingNodeId: state.executingPromptId === promptId ? null : state.executingNodeId,
+          executingNodeHierarchicalKey: state.executingPromptId === promptId ? null : state.executingNodeHierarchicalKey,
+          executingNodePath: state.executingPromptId === promptId ? null : state.executingNodePath,
+          progress: state.executingPromptId === promptId ? 0 : state.progress,
+          nativeOverallProgressByPrompt,
+          nativeStepProgressByPrompt,
+        };
+      });
       void actions.fetchQueue();
       void actions.fetchHistory();
     };
+    window.addEventListener('native-mlx-job-progress', handleNativeMlxProgress);
     window.addEventListener('native-mlx-job-complete', handleNativeMlxComplete);
-    return () => window.removeEventListener('native-mlx-job-complete', handleNativeMlxComplete);
+    return () => {
+      window.removeEventListener('native-mlx-job-progress', handleNativeMlxProgress);
+      window.removeEventListener('native-mlx-job-complete', handleNativeMlxComplete);
+    };
   }, []);
 
   // Mirror connection state into a global store so overlays/buttons elsewhere

@@ -47,6 +47,7 @@ export const QueuePanel = memo(function QueuePanel({ visible, onImageClick }: Qu
   const setCurrentPanel = useNavigationStore((s) => s.setCurrentPanel);
   const nodeTypes = useWorkflowStore((s) => s.nodeTypes);
   const workflowDurationStats = useWorkflowStore((s) => s.workflowDurationStats);
+  const nativeOverallProgressByPrompt = useWorkflowStore((s) => s.nativeOverallProgressByPrompt);
   const promptOutputs = useQueueStore((s) => s.livePromptOutputs);
 
   const history = useHistoryStore((s) => s.history);
@@ -96,6 +97,7 @@ export const QueuePanel = memo(function QueuePanel({ visible, onImageClick }: Qu
     workflow,
   } = executionContext;
   const effectiveExecutingId = executingPromptId || fallbackExecutingId;
+  const nativeOverallProgress = effectiveExecutingId ? nativeOverallProgressByPrompt[effectiveExecutingId] : undefined;
   const executingNodeLabel = useMemo(() => {
     return resolveExecutingNodeLabel(
       executingNodePath,
@@ -109,6 +111,7 @@ export const QueuePanel = memo(function QueuePanel({ visible, onImageClick }: Qu
     runKey: executingPromptId || effectiveExecutingId,
     isRunning: isExecuting || Boolean(effectiveExecutingId),
     workflowDurationStats,
+    progressOverride: nativeOverallProgress ?? null,
   });
   const [menuState, setMenuState] = useState<{
     open: boolean;

@@ -53,6 +53,9 @@ export function BottomBar(props: BottomBarProps) {
   const workflowDurationStats = useWorkflowStore(
     (s) => s.workflowDurationStats,
   );
+  const nativeOverallProgressByPrompt = useWorkflowStore(
+    (s) => s.nativeOverallProgressByPrompt,
+  );
   const pending = useQueueStore((s) => s.pending);
   const running = useQueueStore((s) => s.running);
   const barRef = useRef<HTMLDivElement>(null);
@@ -65,12 +68,14 @@ export function BottomBar(props: BottomBarProps) {
   const fallbackRunKey = comfyProgressRunning.length === 1 ? comfyProgressRunning[0].prompt_id : null;
   const runKey = executingPromptId || fallbackRunKey;
   const hasComfyProgressRun = isExecuting || Boolean(fallbackRunKey);
+  const nativeOverallProgress = runKey ? nativeOverallProgressByPrompt[runKey] : undefined;
   const overallProgress = useOverallProgress({
     workflow,
     runKey,
     isRunning: hasComfyProgressRun,
     workflowDurationStats,
     holdCompleteWhileIdle: infiniteLoop,
+    progressOverride: nativeOverallProgress ?? null,
   });
 
   // Get pinned widget's current value from workflow

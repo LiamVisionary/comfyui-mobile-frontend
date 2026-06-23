@@ -473,6 +473,8 @@ interface WorkflowState {
   currentNodeStartTime: number | null;
   nodeDurationStats: Record<string, { avgMs: number; count: number }>;
   workflowDurationStats: Record<string, { avgMs: number; count: number }>;
+  nativeOverallProgressByPrompt: Record<string, number>;
+  nativeStepProgressByPrompt: Record<string, number>;
 
   // Node output images (keyed by node ID)
   nodeOutputs: Record<string, NodeOutputImage[]>;
@@ -5631,6 +5633,8 @@ export const useWorkflowStore = create<WorkflowState>()(
         currentNodeStartTime: null,
         nodeDurationStats: {},
         workflowDurationStats: {},
+        nativeOverallProgressByPrompt: {},
+        nativeStepProgressByPrompt: {},
         nodeOutputs: {},
         nodeComparerOutputs: {},
         nodeTextOutputs: {},

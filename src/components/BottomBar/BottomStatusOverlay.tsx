@@ -19,6 +19,7 @@ export function BottomStatusOverlay() {
   const executingNodePath = useWorkflowStore((s) => s.executingNodePath);
   const executingPromptId = useWorkflowStore((s) => s.executingPromptId);
   const workflowDurationStats = useWorkflowStore((s) => s.workflowDurationStats);
+  const nativeOverallProgressByPrompt = useWorkflowStore((s) => s.nativeOverallProgressByPrompt);
   const error = useWorkflowErrorsStore((s) => s.error);
   const nodeErrors = useWorkflowErrorsStore((s) => s.nodeErrors);
   const errorsDismissed = useWorkflowErrorsStore((s) => s.errorsDismissed);
@@ -69,11 +70,13 @@ export function BottomStatusOverlay() {
   const fallbackRunKey = comfyProgressRunning.length === 1 ? comfyProgressRunning[0].prompt_id : null;
   const runKey = executingPromptId || fallbackRunKey;
   const hasComfyProgressRun = isExecuting || Boolean(fallbackRunKey);
+  const nativeOverallProgress = runKey ? nativeOverallProgressByPrompt[runKey] : undefined;
   const overallProgress = useOverallProgress({
     workflow,
     runKey,
     isRunning: hasComfyProgressRun,
     workflowDurationStats,
+    progressOverride: nativeOverallProgress ?? null,
   });
   const displayNodeProgress = overallProgress === 100 ? 100 : progress;
   // Workflow load errors (and node errors) are only relevant on the workflow

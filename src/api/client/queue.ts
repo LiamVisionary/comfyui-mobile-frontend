@@ -32,6 +32,15 @@ type NativeMlxCompletionDetail = {
   outputNodeIds?: string[];
 };
 
+type NativeMlxProgressDetail = {
+  promptId: string;
+  currentStep?: number;
+  totalSteps?: number;
+  overallPercent?: number;
+  currentStepPercent?: number;
+  phase?: string;
+};
+
 function nativeApiUrl(path: string): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     return new URL(path, window.location.origin).toString();
@@ -166,7 +175,23 @@ export async function pollNativeMlxJobUntilComplete(
         error?: string;
         outputs?: unknown;
         image_urls?: unknown;
+        current_step?: number;
+        total_steps?: number;
+        progress?: number;
+        step_progress?: number;
+        progress_phase?: string;
       } | null);
+      if (job) {
+        const progressDetail: NativeMlxProgressDetail = {
+          promptId,
+          currentStep: Number(job.current_step) || 0,
+          totalSteps: Number(job.total_steps) || undefined,
+          overallPercent: Number.isFinite(Number(job.progress)) ? Number(job.progress) : undefined,
+          currentStepPercent: Number.isFinite(Number(job.step_progress)) ? Number(job.step_progress) : undefined,
+          phase: job.progress_phase,
+        };
+        window.dispatchEvent(new CustomEvent('native-mlx-job-progress', { detail: progressDetail }));
+      }
       const status = String(job?.status || '');
       if (status === 'success' || status === 'error' || status === 'failed') {
         const detail: NativeMlxCompletionDetail = {

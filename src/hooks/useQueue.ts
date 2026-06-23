@@ -468,8 +468,13 @@ export const useQueueStore = create<QueueState>()(
       removeRunning: (promptId) => {
         if (!promptId) return;
         set((state) => {
-          if (!state.running.some((item) => item.prompt_id === promptId)) return {};
-          return { running: state.running.filter((item) => item.prompt_id !== promptId) };
+          const shadowQueueJobs = { ...state.shadowQueueJobs };
+          delete shadowQueueJobs[promptId];
+          return {
+            running: state.running.filter((item) => item.prompt_id !== promptId),
+            pending: state.pending.filter((item) => item.prompt_id !== promptId),
+            shadowQueueJobs,
+          };
         });
       },
 

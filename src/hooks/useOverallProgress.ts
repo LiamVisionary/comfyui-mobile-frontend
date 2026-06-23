@@ -8,6 +8,7 @@ interface OverallProgressInput {
   isRunning: boolean;
   workflowDurationStats: Record<string, { avgMs: number; count: number }>;
   holdCompleteWhileIdle?: boolean;
+  progressOverride?: number | null;
 }
 
 export function useOverallProgress({
@@ -16,6 +17,7 @@ export function useOverallProgress({
   isRunning,
   workflowDurationStats,
   holdCompleteWhileIdle = false,
+  progressOverride = null,
 }: OverallProgressInput): number | null {
   const [percent, setPercent] = useState<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -74,6 +76,12 @@ export function useOverallProgress({
             intervalId = null;
           }
         }
+      } else if (progressOverride != null) {
+        const override = Math.min(100, Math.max(0, Math.round(progressOverride)));
+        lastRunKeyRef.current = runKey;
+        lastPercentRef.current = override;
+        holdUntilRef.current = override >= 100 ? currentTime + holdMs : null;
+        nextValue = override;
       } else if (holdUntilRef.current && currentTime < holdUntilRef.current) {
         pendingRunKeyRef.current = runKey;
         nextValue = 100;
@@ -148,7 +156,7 @@ export function useOverallProgress({
       if (timeoutId) clearTimeout(timeoutId);
       if (intervalId) clearInterval(intervalId);
     };
-  }, [workflow, runKey, isRunning, workflowDurationStats, holdCompleteWhileIdle]);
+  }, [workflow, runKey, isRunning, workflowDurationStats, holdCompleteWhileIdle, progressOverride]);
 
   return percent;
 }
