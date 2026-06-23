@@ -62,11 +62,17 @@ export function BottomStatusOverlay() {
     );
   }, [workflow, executingNodeId, executingNodePath, nodeTypes]);
 
-  const runKey = executingPromptId || (running[0]?.prompt_id ?? null);
+  const comfyProgressRunning = running.filter((item) => {
+    const backend = String(item.extra?.backend || '').toLowerCase();
+    return !backend.includes('native') && !backend.includes('mlx');
+  });
+  const fallbackRunKey = comfyProgressRunning.length === 1 ? comfyProgressRunning[0].prompt_id : null;
+  const runKey = executingPromptId || fallbackRunKey;
+  const hasComfyProgressRun = isExecuting || Boolean(fallbackRunKey);
   const overallProgress = useOverallProgress({
     workflow,
     runKey,
-    isRunning: isExecuting || running.length > 0,
+    isRunning: hasComfyProgressRun,
     workflowDurationStats,
   });
   const displayNodeProgress = overallProgress === 100 ? 100 : progress;

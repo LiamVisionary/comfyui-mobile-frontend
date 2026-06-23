@@ -60,11 +60,18 @@ export const QueuePanel = memo(function QueuePanel({ visible, onImageClick }: Qu
     () => new Set(running.map((item) => item.prompt_id)),
     [running],
   );
-  // NOTE (intentionally deferred — LOW): only infer the running id when exactly
-  // one prompt is running. With 2+ running and no websocket `executingPromptId`,
-  // no card gets progress. ComfyUI executes sequentially so 2+ truly-running is
-  // rare; left as-is rather than guessing which of several is current.
-  const fallbackExecutingId = running.length === 1 ? running[0].prompt_id : null;
+  const comfyProgressEligibleRunning = useMemo(() => (
+    running.filter((item) => {
+      const backend = String(item.extra?.backend || '').toLowerCase();
+      return !backend.includes('native') && !backend.includes('mlx');
+    })
+  ), [running]);
+  // Only infer a Comfy executing id for real Comfy queue items. Native MLX jobs
+  // finish through the wrapper and do not emit Comfy progress events; treating
+  // them as Comfy executions makes the estimated progress bar fill/reset forever.
+  const fallbackExecutingId = comfyProgressEligibleRunning.length === 1
+    ? comfyProgressEligibleRunning[0].prompt_id
+    : null;
   const executionContext = useWorkflowStore(
     useShallow((s) => (
       resolveQueueExecutionContext({

@@ -302,12 +302,11 @@ export interface PromptQueueResponse {
 export async function queuePrompt(
   request: PromptQueueRequest,
 ): Promise<PromptQueueResponse> {
-  const nativeCandidate = detectNativeMlxBigLoveKlein3(request.prompt);
-  if (nativeCandidate) {
-    const nativeResponse = await queueNativeMlxBigLoveKlein3(nativeCandidate);
-    if (nativeResponse) return nativeResponse;
-  }
-
+  // Do not route BigLove native jobs directly from the browser. The wrapper owns
+  // the native MLX interception at /comfy/api/prompt so Mobile keeps the normal
+  // Comfy-shaped queue/history lifecycle. Browser-side direct /api/generate made
+  // native jobs bypass Comfy websocket/history semantics, causing missing output
+  // handoff and phantom estimated progress loops.
   const response = await fetch('/api/prompt', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

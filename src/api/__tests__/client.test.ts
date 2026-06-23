@@ -78,9 +78,9 @@ describe('detectNativeMlxBigLoveKlein3', () => {
     expect(detectNativeMlxBigLoveKlein3(bigLovePrompt)?.imagePath).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
   });
 
-  it('sends BigLove Klein3 jobs to the native wrapper API, not rewritten Comfy API paths', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 'native-job-1', status: 'queued' }), {
-      status: 202,
+  it('keeps BigLove queueing on the normal prompt endpoint so the wrapper owns native routing', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ prompt_id: 'native-job-1', number: 0 }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json' },
     }));
     vi.stubGlobal('fetch', fetchMock);
@@ -90,10 +90,8 @@ describe('detectNativeMlxBigLoveKlein3', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const call = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit | undefined];
     const [url, init] = call;
-    expect(String(url)).toBe('http://localhost:3000/api/generate');
+    expect(String(url)).toBe('/api/prompt');
     const payload = JSON.parse(String(init?.body));
-    expect(payload.backend).toBe('mlx-mxfp8-bigloves-klein3-edit');
-    expect(payload.image_path).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
-    expect(payload.steps).toBe(1);
+    expect(payload.prompt).toStrictEqual(bigLovePrompt);
   });
 });
