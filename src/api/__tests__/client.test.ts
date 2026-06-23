@@ -94,6 +94,6 @@ describe('detectNativeMlxBigLoveKlein3', () => {
     const payload = JSON.parse(String(init?.body));
     expect(payload.backend).toBe('mlx-mxfp8-bigloves-klein3-edit');
     expect(payload.image_path).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
-    expect(payload.steps).toBe(4);
+    expect(payload.steps).toBe(1);
   });
 });

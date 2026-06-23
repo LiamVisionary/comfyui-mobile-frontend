@@ -105,7 +105,12 @@ export function detectNativeMlxBigLoveKlein3(prompt: Record<string, unknown>): N
   if (!promptText.trim()) return null;
 
   const negativePrompt = resolveSamplerText(sampler, nodesById, 'negative') ?? undefined;
-  const steps = Math.max(1, Math.min(12, Math.round(numberInput(sampler?.inputs?.steps) ?? 4)));
+  // BigLove Klein3 MXFP8 fast profile: cap Comfy graph steps to the verified
+  // unique-prompt sub-5 native setting. Two steps is ~4s when prompt embeddings
+  // are cached, but new prompts can exceed 5s due to text encoding; one step is
+  // the only path that consistently stays below the UX target.
+  const graphSteps = Math.max(1, Math.min(12, Math.round(numberInput(sampler?.inputs?.steps) ?? 4)));
+  const steps = Math.min(1, graphSteps);
   const seed = numberInput(sampler?.inputs?.seed) ?? undefined;
   const width = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.width) ?? 768);
   const height = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.height) ?? 512);
