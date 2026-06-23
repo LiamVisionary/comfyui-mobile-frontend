@@ -120,6 +120,37 @@ export function detectNativeMlxBigLoveKlein3(prompt: Record<string, unknown>): N
   return { imagePath, prompt: promptText, negativePrompt, steps, seed, width, height, guidance };
 }
 
+async function pollNativeMlxJobUntilComplete(promptId: string): Promise<void> {
+  const startedAt = Date.now();
+  const deadline = startedAt + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    try {
+      const response = await fetch(nativeApiUrl(nativeApiPath('job', encodeURIComponent(promptId))), { cache: 'no-store' });
+      if (!response.ok) continue;
+      const job = await response.json().catch(() => null) as {
+        status?: string;
+        elapsed_seconds?: number;
+        error?: string;
+      } | null;
+      const status = String(job?.status || '');
+      if (status === 'success' || status === 'error' || status === 'failed') {
+        window.dispatchEvent(new CustomEvent('native-mlx-job-complete', {
+          detail: {
+            promptId,
+            elapsedSeconds: Number(job?.elapsed_seconds) || (Date.now() - startedAt) / 1000,
+            status,
+            error: job?.error,
+          },
+        }));
+        return;
+      }
+    } catch {
+      // Keep polling; the wrapper can briefly restart between queue and finish.
+    }
+  }
+}
+
 async function queueNativeMlxBigLoveKlein3(candidate: NativeMlxQueueCandidate): Promise<PromptQueueResponse | null> {
   const response = await fetch(nativeApiUrl(nativeApiPath('generate')), {
     method: 'POST',
@@ -139,7 +170,7 @@ async function queueNativeMlxBigLoveKlein3(candidate: NativeMlxQueueCandidate): 
   if (!response.ok) return null;
   const data = await response.json().catch(() => null) as { id?: string; number?: number } | null;
   if (!data?.id) return null;
-  window.dispatchEvent(new CustomEvent('native-mlx-job-complete'));
+  void pollNativeMlxJobUntilComplete(data.id);
   return { prompt_id: data.id, number: data.number ?? 0 };
 }
 

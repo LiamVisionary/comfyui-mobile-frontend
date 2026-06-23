@@ -161,6 +161,25 @@ export function useWebSocket() {
     storeActionsRef.current = snapshotStoreActions();
   }, []);
 
+  useEffect(() => {
+    const handleNativeMlxComplete = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        promptId?: string;
+        elapsedSeconds?: number;
+        status?: string;
+      }>).detail;
+      const promptId = detail?.promptId;
+      if (!promptId) return;
+      const actions = storeActionsRef.current;
+      actions.markPromptCompleting(promptId, detail.elapsedSeconds);
+      actions.removeRunning(promptId);
+      void actions.fetchQueue();
+      void actions.fetchHistory();
+    };
+    window.addEventListener('native-mlx-job-complete', handleNativeMlxComplete);
+    return () => window.removeEventListener('native-mlx-job-complete', handleNativeMlxComplete);
+  }, []);
+
   // Mirror connection state into a global store so overlays/buttons elsewhere
   // can gate on it without consuming this hook's return value directly.
   useEffect(() => {
