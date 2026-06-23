@@ -1,19 +1,205 @@
-import type { QueueInfo, History } from '../types';
+import type { QueueInfo, History, HistoryOutputImage } from '../types';
 import type { QueueWorkflowDiff } from '@/utils/workflowDiff';
+
+function stringInput(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function numberInput(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+type ApiPromptNode = { class_type?: unknown; inputs?: Record<string, unknown> };
+
+type NativeMlxQueueCandidate = {
+  imagePath: string;
+  prompt: string;
+  negativePrompt?: string;
+  steps: number;
+  seed?: number;
+  width?: number;
+  height?: number;
+};
+
+function asPromptNode(value: unknown): ApiPromptNode | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const node = value as ApiPromptNode;
+  return node.inputs && typeof node.inputs === 'object' ? node : null;
+}
+
+function getLinkedNode(nodesById: Map<string, ApiPromptNode>, value: unknown): ApiPromptNode | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const nodeId = String(value[0]);
+  return nodesById.get(nodeId) ?? null;
+}
+
+function resolveSamplerLoadImage(sampler: ApiPromptNode | undefined, nodesById: Map<string, ApiPromptNode>): ApiPromptNode | undefined {
+  if (!sampler?.inputs) return undefined;
+  const seen = new Set<ApiPromptNode>();
+  const visit = (node: ApiPromptNode | null): ApiPromptNode | undefined => {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (node.class_type === 'LoadImage') return node;
+    const inputs = node.inputs ?? {};
+    const preferred = ['pixels', 'image', 'images', 'latent_image', 'samples'];
+    for (const key of preferred) {
+      const found = visit(getLinkedNode(nodesById, inputs[key]));
+      if (found) return found;
+    }
+    for (const value of Object.values(inputs)) {
+      const found = visit(getLinkedNode(nodesById, value));
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return visit(getLinkedNode(nodesById, sampler.inputs.latent_image));
+}
+
+function resolveSamplerText(sampler: ApiPromptNode | undefined, nodesById: Map<string, ApiPromptNode>, inputName: 'positive' | 'negative'): string | undefined {
+  const textNode = getLinkedNode(nodesById, sampler?.inputs?.[inputName]);
+  return stringInput(textNode?.inputs?.text) ?? undefined;
+}
+
+export function detectNativeMlxBigLoveKlein3(prompt: Record<string, unknown>): NativeMlxQueueCandidate | null {
+  const entries = Object.entries(prompt);
+  const nodesById = new Map<string, ApiPromptNode>();
+  const nodes: ApiPromptNode[] = [];
+  for (const [id, value] of entries) {
+    const node = asPromptNode(value);
+    if (!node) continue;
+    nodesById.set(id, node);
+    nodes.push(node);
+  }
+
+  const unet = nodes.find((node) => {
+    if (node?.class_type !== 'UNETLoader') return false;
+    const name = stringInput(node.inputs?.unet_name)?.toLowerCase() || '';
+    return name.includes('biglove') && name.includes('klein3') && name.endsWith('.safetensors');
+  });
+  if (!unet) return null;
+
+  const sampler = nodes.find((node) => ['KSampler', 'KSamplerAdvanced'].includes(String(node.class_type || '')));
+  const loadImage = resolveSamplerLoadImage(sampler, nodesById) ?? nodes.find((node) => node.class_type === 'LoadImage');
+  const imagePath = stringInput(loadImage?.inputs?.image);
+  if (!imagePath) return null;
+
+  const promptText = resolveSamplerText(sampler, nodesById, 'positive')
+    ?? stringInput(nodes.find((node) => node.class_type === 'CLIPTextEncode')?.inputs?.text)
+    ?? '';
+  if (!promptText.trim()) return null;
+
+  const negativePrompt = resolveSamplerText(sampler, nodesById, 'negative') ?? undefined;
+  const steps = Math.max(1, Math.min(12, Math.round(numberInput(sampler?.inputs?.steps) ?? 4)));
+  const seed = numberInput(sampler?.inputs?.seed) ?? undefined;
+  const width = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.width) ?? 768);
+  const height = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.height) ?? 512);
+
+  return { imagePath, prompt: promptText, negativePrompt, steps, seed, width, height };
+}
+
+async function queueNativeMlxBigLoveKlein3(candidate: NativeMlxQueueCandidate): Promise<PromptQueueResponse | null> {
+  const response = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: candidate.prompt,
+      image_path: candidate.imagePath,
+      backend: 'mlx-mxfp8-bigloves-klein3-edit',
+      options: {
+        negative_prompt: candidate.negativePrompt,
+        steps: candidate.steps,
+        seed: candidate.seed,
+        width: candidate.width,
+        height: candidate.height,
+      },
+    }),
+  });
+  if (!response.ok) return null;
+  const data = await response.json().catch(() => null) as { id?: string; number?: number } | null;
+  if (!data?.id) return null;
+  window.dispatchEvent(new CustomEvent('native-mlx-job-complete'));
+  return { prompt_id: data.id, number: data.number ?? 0 };
+}
+
+async function getNativeZImageHistory(maxItems = 50): Promise<Array<Record<string, unknown>>> {
+  try {
+    const response = await fetch(`/api/history?max_items=${maxItems}`, { cache: 'no-store' });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return Array.isArray(data?.history) ? data.history : [];
+  } catch {
+    return [];
+  }
+}
+
+function nativeRecordToImages(item: Record<string, unknown>): HistoryOutputImage[] {
+  const urls = Array.isArray(item.image_urls) ? item.image_urls : [];
+  const id = String(item.id || item.prompt_id || 'native');
+  return urls
+    .map((url: unknown) => String(url || ''))
+    .filter(Boolean)
+    .map((url: string, index: number) => {
+      const filename = url.split('?')[0]?.split('/').pop() || `${id}-${index}.png`;
+      return { filename, subfolder: '', type: 'output', fullUrl: url };
+    });
+}
+
+function nativeRecordsToHistory(records: Array<Record<string, unknown>>): History {
+  const history: History = {};
+  for (const item of records) {
+    const id = String(item?.id || item?.prompt_id || '');
+    if (!id) continue;
+    const created = Date.parse(String(item?.created_at || '')) || Date.now();
+    const finished = Date.parse(String(item?.finished_at || '')) || created;
+    const isError = item?.status === 'error' || item?.status === 'failed';
+    history[id] = {
+      prompt: [0, id, {}, {}, []],
+      outputs: { native_mlx: { images: nativeRecordToImages(item) } },
+      status: {
+        status_str: isError ? 'error' : 'success',
+        completed: !isError,
+        messages: [
+          ['execution_start', { timestamp: created }],
+          [isError ? 'execution_error' : 'execution_success', { timestamp: finished, message: item?.error }],
+        ],
+      },
+    };
+  }
+  return history;
+}
 
 export async function getQueue(): Promise<QueueInfo> {
   const response = await fetch(`/api/queue`);
   if (!response.ok) throw new Error('Failed to fetch queue');
-  return response.json();
+  const queue = await response.json() as QueueInfo;
+  const nativeRecords = await getNativeZImageHistory(20);
+  nativeRecords.forEach((record, index) => {
+    const id = String(record.id || '');
+    if (!id) return;
+    const status = String(record.status || '');
+    const tuple: [number, string, unknown, Record<string, unknown>, string[]] = [index, id, {}, { backend: record.backend || 'native-mlx' }, []];
+    if (status === 'running') queue.queue_running.push(tuple);
+    else if (status === 'queued') queue.queue_pending.push(tuple);
+  });
+  return queue;
 }
 
 export async function getHistory(maxItems?: number): Promise<History> {
   const url = maxItems
     ? `/api/history?max_items=${maxItems}`
     : `/api/history`;
-  const response = await fetch(url);
+  const [response, nativeRecords] = await Promise.all([
+    fetch(url),
+    getNativeZImageHistory(maxItems ?? 50),
+  ]);
   if (!response.ok) throw new Error('Failed to fetch history');
-  return response.json();
+  const data = await response.json();
+  const comfyHistory = Array.isArray(data?.history) ? nativeRecordsToHistory(data.history) : data;
+  return {
+    ...nativeRecordsToHistory(nativeRecords.filter((record) => !['queued', 'running'].includes(String(record.status || '')))),
+    ...comfyHistory,
+  };
 }
 
 // Total number of runs in ComfyUI's history (the frontend pages /history with
@@ -64,6 +250,12 @@ export interface PromptQueueResponse {
 export async function queuePrompt(
   request: PromptQueueRequest,
 ): Promise<PromptQueueResponse> {
+  const nativeCandidate = detectNativeMlxBigLoveKlein3(request.prompt);
+  if (nativeCandidate) {
+    const nativeResponse = await queueNativeMlxBigLoveKlein3(nativeCandidate);
+    if (nativeResponse) return nativeResponse;
+  }
+
   const response = await fetch('/api/prompt', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -152,4 +344,3 @@ export async function clearHistory(): Promise<void> {
     body: JSON.stringify({ clear: true })
   });
 }
-

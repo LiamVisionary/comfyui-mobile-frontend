@@ -24,6 +24,7 @@ export interface HistoryImageSource {
   filename: string;
   subfolder: string;
   type: string;
+  fullUrl?: string;
 }
 
 export function getHistoryImageFileId(image: HistoryImageSource): string {
@@ -70,9 +71,10 @@ export function buildViewerImages(
       const altText = typeof alt === 'function' ? alt(imageIndex, itemIndex) : alt;
       const mediaType = getMediaType(img.filename);
       const fileType = mediaType === 'video' ? 'video' : 'image';
+      const fullUrl = img.fullUrl || getImageUrl(img.filename, img.subfolder, img.type);
       images.push({
-        src: getImageUrl(img.filename, img.subfolder, img.type),
-        displaySrc: fileType === 'image'
+        src: fullUrl,
+        displaySrc: fileType === 'image' && !img.fullUrl
           ? getImagePreviewUrl(img.filename, img.subfolder, img.type)
           : undefined,
         alt: altText,
@@ -87,7 +89,7 @@ export function buildViewerImages(
           id: getHistoryImageFileId(img),
           name: img.filename,
           type: fileType,
-          fullUrl: getImageUrl(img.filename, img.subfolder, img.type),
+          fullUrl,
           hidden: item.hidden,
         }
       });

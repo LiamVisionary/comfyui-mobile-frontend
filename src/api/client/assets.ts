@@ -16,7 +16,7 @@ export async function uploadImageFile(
     form.append('overwrite', options.overwrite ? 'true' : 'false');
   }
 
-  const response = await fetch(`/upload/image`, {
+  const response = await fetch(`/comfy/upload/image`, {
     method: 'POST',
     body: form
   });

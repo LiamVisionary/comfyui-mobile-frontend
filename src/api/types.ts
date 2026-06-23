@@ -169,6 +169,7 @@ export interface HistoryOutputImage {
   filename: string;
   subfolder: string;
   type: string;
+  fullUrl?: string;
 }
 
 export interface HistoryOutput {

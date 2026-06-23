@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { searchUserImagesByPrompt } from '@/api/client';
+import { detectNativeMlxBigLoveKlein3, searchUserImagesByPrompt } from '@/api/client';
 
 describe('searchUserImagesByPrompt', () => {
   afterEach(() => {
@@ -60,5 +60,20 @@ describe('searchUserImagesByPrompt', () => {
       'output/.hidden/batch/sample scene/ComfyUI_04555_.png',
       'output/.hidden/batch/sample scene/ComfyUI_04556_.png',
     ]);
+  });
+});
+
+describe('detectNativeMlxBigLoveKlein3', () => {
+  it('uses the LoadImage wired into the sampler, not the first stale LoadImage', () => {
+    const prompt = {
+      '1': { class_type: 'UNETLoader', inputs: { unet_name: 'BigLoveKlein3_mxfp8.safetensors' } },
+      '2': { class_type: 'LoadImage', inputs: { image: 'old-stale-image.png' } },
+      '3': { class_type: 'LoadImage', inputs: { image: 'Screenshot 2026-06-21 at 8.52.09 PM.png' } },
+      '4': { class_type: 'VAEEncode', inputs: { pixels: ['3', 0] } },
+      '5': { class_type: 'KSampler', inputs: { latent_image: ['4', 0], positive: ['6', 0], steps: 4, seed: 123 } },
+      '6': { class_type: 'CLIPTextEncode', inputs: { text: 'add a red santa hat' } },
+    };
+
+    expect(detectNativeMlxBigLoveKlein3(prompt)?.imagePath).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
   });
 });
