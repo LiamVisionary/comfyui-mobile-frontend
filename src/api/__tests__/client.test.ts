@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { detectNativeMlxBigLoveKlein3, searchUserImagesByPrompt } from '@/api/client';
+import { detectNativeMlxBigLoveKlein3, queuePrompt, searchUserImagesByPrompt } from '@/api/client';
 
 describe('searchUserImagesByPrompt', () => {
   afterEach(() => {
@@ -64,16 +64,36 @@ describe('searchUserImagesByPrompt', () => {
 });
 
 describe('detectNativeMlxBigLoveKlein3', () => {
-  it('uses the LoadImage wired into the sampler, not the first stale LoadImage', () => {
-    const prompt = {
-      '1': { class_type: 'UNETLoader', inputs: { unet_name: 'BigLoveKlein3_mxfp8.safetensors' } },
-      '2': { class_type: 'LoadImage', inputs: { image: 'old-stale-image.png' } },
-      '3': { class_type: 'LoadImage', inputs: { image: 'Screenshot 2026-06-21 at 8.52.09 PM.png' } },
-      '4': { class_type: 'VAEEncode', inputs: { pixels: ['3', 0] } },
-      '5': { class_type: 'KSampler', inputs: { latent_image: ['4', 0], positive: ['6', 0], steps: 4, seed: 123 } },
-      '6': { class_type: 'CLIPTextEncode', inputs: { text: 'add a red santa hat' } },
-    };
+  const bigLovePrompt = {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'BigLoveKlein3_mxfp8.safetensors' } },
+    '2': { class_type: 'LoadImage', inputs: { image: 'old-stale-image.png' } },
+    '3': { class_type: 'LoadImage', inputs: { image: 'Screenshot 2026-06-21 at 8.52.09 PM.png' } },
+    '4': { class_type: 'VAEEncode', inputs: { pixels: ['3', 0] } },
+    '5': { class_type: 'KSampler', inputs: { latent_image: ['4', 0], positive: ['6', 0], steps: 4, seed: 123, cfg: 1 } },
+    '6': { class_type: 'CLIPTextEncode', inputs: { text: 'add a red santa hat' } },
+    '7': { class_type: 'EmptyLatentImage', inputs: { width: 768, height: 512 } },
+  };
 
-    expect(detectNativeMlxBigLoveKlein3(prompt)?.imagePath).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
+  it('uses the LoadImage wired into the sampler, not the first stale LoadImage', () => {
+    expect(detectNativeMlxBigLoveKlein3(bigLovePrompt)?.imagePath).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
+  });
+
+  it('sends BigLove Klein3 jobs to the native wrapper API, not rewritten Comfy API paths', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 'native-job-1', status: 'queued' }), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await queuePrompt({ prompt: bigLovePrompt });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit | undefined];
+    const [url, init] = call;
+    expect(String(url)).toBe('http://localhost:3000/api/generate');
+    const payload = JSON.parse(String(init?.body));
+    expect(payload.backend).toBe('mlx-mxfp8-bigloves-klein3-edit');
+    expect(payload.image_path).toBe('Screenshot 2026-06-21 at 8.52.09 PM.png');
+    expect(payload.steps).toBe(4);
   });
 });

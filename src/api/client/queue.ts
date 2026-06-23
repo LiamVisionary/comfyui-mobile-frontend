@@ -20,7 +20,22 @@ type NativeMlxQueueCandidate = {
   seed?: number;
   width?: number;
   height?: number;
+  guidance?: number;
 };
+
+function nativeApiUrl(path: string): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return new URL(path, window.location.origin).toString();
+  }
+  return path;
+}
+
+function nativeApiPath(...parts: string[]): string {
+  // Do not write literal "/api/generate" or "/api/history" here. The Z-Image
+  // wrapper rewrites those literals inside served JS to "/comfy/api/..." for
+  // ComfyUI compatibility, which bypasses the warmed native BigLove Klein route.
+  return ['', 'api', ...parts].join('/');
+}
 
 function asPromptNode(value: unknown): ApiPromptNode | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -95,24 +110,25 @@ export function detectNativeMlxBigLoveKlein3(prompt: Record<string, unknown>): N
   const width = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.width) ?? 768);
   const height = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.height) ?? 512);
 
-  return { imagePath, prompt: promptText, negativePrompt, steps, seed, width, height };
+  const guidance = Math.max(0, Math.min(20, numberInput(sampler?.inputs?.cfg) ?? numberInput(sampler?.inputs?.guidance) ?? 1));
+
+  return { imagePath, prompt: promptText, negativePrompt, steps, seed, width, height, guidance };
 }
 
 async function queueNativeMlxBigLoveKlein3(candidate: NativeMlxQueueCandidate): Promise<PromptQueueResponse | null> {
-  const response = await fetch('/api/generate', {
+  const response = await fetch(nativeApiUrl(nativeApiPath('generate')), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       prompt: candidate.prompt,
       image_path: candidate.imagePath,
       backend: 'mlx-mxfp8-bigloves-klein3-edit',
-      options: {
-        negative_prompt: candidate.negativePrompt,
-        steps: candidate.steps,
-        seed: candidate.seed,
-        width: candidate.width,
-        height: candidate.height,
-      },
+      negative_prompt: candidate.negativePrompt,
+      steps: candidate.steps,
+      seed: candidate.seed,
+      width: candidate.width,
+      height: candidate.height,
+      guidance: candidate.guidance,
     }),
   });
   if (!response.ok) return null;
@@ -124,7 +140,7 @@ async function queueNativeMlxBigLoveKlein3(candidate: NativeMlxQueueCandidate): 
 
 async function getNativeZImageHistory(maxItems = 50): Promise<Array<Record<string, unknown>>> {
   try {
-    const response = await fetch(`/api/history?max_items=${maxItems}`, { cache: 'no-store' });
+    const response = await fetch(`${nativeApiUrl(nativeApiPath('history'))}?max_items=${maxItems}`, { cache: 'no-store' });
     if (!response.ok) return [];
     const data = await response.json();
     return Array.isArray(data?.history) ? data.history : [];
