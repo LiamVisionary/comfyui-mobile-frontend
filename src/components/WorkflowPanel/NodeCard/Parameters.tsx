@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ChangeEvent } from 'react';
 import { Collapsible } from '@/components/Collapsible';
 import { FoldIcon } from '@/components/FoldIcon';
 import { WidgetControl } from '../../InputControls/WidgetControl';
@@ -61,6 +61,63 @@ interface RenderWidgetDescriptor extends WidgetDescriptor {
 }
 
 const PROMPT_ASSISTANT_DRAFT_SETTLE_MS = 360;
+const PROMPT_ASSISTANT_REFERENCE_MAX_EDGE = 1280;
+
+interface PromptAssistantReferenceImage {
+  dataUrl: string;
+  name: string;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Image read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Image decode failed'));
+    image.src = src;
+  });
+}
+
+async function preparePromptAssistantReferenceImage(file: File): Promise<PromptAssistantReferenceImage> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Choose an image file');
+  }
+
+  const rawDataUrl = await readFileAsDataUrl(file);
+  try {
+    const image = await loadImageElement(rawDataUrl);
+    const maxEdge = Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height);
+    if (!maxEdge || maxEdge <= PROMPT_ASSISTANT_REFERENCE_MAX_EDGE) {
+      return { dataUrl: rawDataUrl, name: file.name || 'reference image' };
+    }
+
+    const scale = PROMPT_ASSISTANT_REFERENCE_MAX_EDGE / maxEdge;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return { dataUrl: rawDataUrl, name: file.name || 'reference image' };
+    }
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return {
+      dataUrl: canvas.toDataURL('image/jpeg', 0.86),
+      name: file.name || 'reference image',
+    };
+  } catch {
+    return { dataUrl: rawDataUrl, name: file.name || 'reference image' };
+  }
+}
 
 interface NodeCardParametersProps {
   node: WorkflowNode;
@@ -121,6 +178,9 @@ export function NodeCardParameters({
   const [promptAssistantResult, setPromptAssistantResult] =
     useState<PromptAssistantGenerateResponse | null>(null);
   const [promptAssistantError, setPromptAssistantError] = useState<string | null>(null);
+  const [promptAssistantReferenceImage, setPromptAssistantReferenceImage] =
+    useState<PromptAssistantReferenceImage | null>(null);
+  const [promptAssistantImageLoading, setPromptAssistantImageLoading] = useState(false);
   const toggleLoraFold = (index: number) =>
     setFoldedLoras((prev) => ({ ...prev, [index]: !prev[index] }));
   const isLoraManagerNode = isLoraManagerNodeType(node.type);
@@ -638,9 +698,33 @@ export function NodeCardParameters({
       timeout_seconds: asNumber('timeout_seconds', 60),
       seed: Math.trunc(asNumber('seed', -1)),
       profile_json_override: asString('profile_json_override'),
-      helper_mode: asString('helper_mode', 'Regional prompt') || 'Regional prompt',
+      helper_mode: asString('helper_mode', 'None') || 'None',
       negative_prompt: asString('negative_prompt'),
+      reference_image: promptAssistantReferenceImage
+        ? {
+            data_url: promptAssistantReferenceImage.dataUrl,
+            name: promptAssistantReferenceImage.name,
+          }
+        : undefined,
     };
+  };
+
+  const handlePromptAssistantReferenceImageChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.currentTarget.files?.[0] ?? null;
+    event.currentTarget.value = '';
+    if (!file) return;
+
+    setPromptAssistantImageLoading(true);
+    setPromptAssistantError(null);
+    try {
+      setPromptAssistantReferenceImage(await preparePromptAssistantReferenceImage(file));
+    } catch (error) {
+      setPromptAssistantError(error instanceof Error ? error.message : 'Image upload failed');
+    } finally {
+      setPromptAssistantImageLoading(false);
+    }
   };
 
   const handlePromptAssistantGenerate = async () => {
@@ -993,6 +1077,42 @@ export function NodeCardParameters({
           )}
           {isPromptAssistantNode && (
             <div className={`mt-3 p-3 ${controlNestedSurfaceClassName}`}>
+              <div className="mb-3 space-y-2">
+                <div className="flex gap-2">
+                  <label className="flex-1 py-2 px-3 rounded-lg border border-slate-600/80 bg-slate-950/40 text-sm font-medium text-slate-200 text-center transition-colors hover:border-cyan-400/70 hover:text-cyan-100">
+                    <span>{promptAssistantImageLoading ? 'Loading image' : 'Reference image'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="sr-only"
+                      onChange={handlePromptAssistantReferenceImageChange}
+                      disabled={isBypassed || promptAssistantImageLoading || promptAssistantLoading}
+                    />
+                  </label>
+                  {promptAssistantReferenceImage && (
+                    <button
+                      type="button"
+                      className="py-2 px-3 rounded-lg border border-slate-600/80 bg-slate-950/40 text-sm font-medium text-slate-200 transition-colors hover:border-red-300/70 hover:text-red-100"
+                      onClick={() => setPromptAssistantReferenceImage(null)}
+                      disabled={isBypassed || promptAssistantLoading}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                {promptAssistantReferenceImage && (
+                  <div className="flex items-center gap-3 rounded-lg border border-slate-700/80 bg-slate-950/40 p-2">
+                    <img
+                      src={promptAssistantReferenceImage.dataUrl}
+                      alt=""
+                      className="h-16 w-16 rounded-md object-cover"
+                    />
+                    <div className="min-w-0 flex-1 text-xs text-slate-300 truncate">
+                      {promptAssistantReferenceImage.name}
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 type="button"
                 className="w-full py-2 px-3 rounded-lg text-sm font-semibold bg-cyan-500 text-slate-950 enabled:hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"

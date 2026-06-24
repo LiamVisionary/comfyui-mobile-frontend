@@ -11,6 +11,10 @@ export interface PromptAssistantGenerateRequest {
   profile_json_override?: string;
   helper_mode?: string;
   negative_prompt?: string;
+  reference_image?: {
+    data_url: string;
+    name?: string;
+  };
 }
 
 export interface PromptAssistantGenerateResponse {

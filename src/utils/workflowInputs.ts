@@ -583,7 +583,7 @@ function applyPromptAssistantQueueDefaults(
     inputs.negative_prompt = '';
   }
   if (inputs.helper_mode == null || String(inputs.helper_mode).trim() === '') {
-    inputs.helper_mode = 'Regional prompt';
+    inputs.helper_mode = 'None';
   }
   inputs.emit_ui_text = true;
   inputs.auto_generate_on_queue = false;

@@ -1489,7 +1489,7 @@ describe('PromptAssistantGenerate queue serialization', () => {
           profile_json_override: ['STRING', { default: '' }],
           prompt: ['STRING', { default: '' }],
           negative_prompt: ['STRING', { default: '' }],
-          helper_mode: [['Regional prompt', 'Bounding boxes'], { default: 'Regional prompt' }],
+          helper_mode: [['None', 'Couple regions', 'Bounding boxes'], { default: 'None' }],
           emit_ui_text: ['BOOLEAN', { default: false }],
           auto_generate_on_queue: ['BOOLEAN', { default: false }],
         },
@@ -1552,6 +1552,48 @@ describe('PromptAssistantGenerate queue serialization', () => {
     expect(inputs.image_caption).toBe('');
     expect(inputs.extra_instructions).toBe('');
     expect(inputs.emit_ui_text).toBe(true);
+    expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+
+  it('defaults blank helper mode to plain prompting', () => {
+    const node = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea',
+        'swarm_booru_tags',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        '',
+        'smiling dog with fluffy fur',
+        '',
+        '',
+        false,
+        true,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      node,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.prompt).toBe('smiling dog with fluffy fur');
+    expect(inputs.helper_mode).toBe('None');
     expect(inputs.auto_generate_on_queue).toBe(false);
   });
 
