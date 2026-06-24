@@ -52,6 +52,29 @@ beforeEach(() => {
 });
 
 describe('queue recovery', () => {
+  it('shows a local running card immediately after a prompt is accepted', () => {
+    useQueueStore.getState().recordQueuedPrompt(
+      'just-queued',
+      { prompt: { node: {} }, extra_data: { extra_pnginfo: {} } },
+      { number: 12, outputsToExecute: ['9'], sessionId: 'active-session' },
+    );
+
+    expect(useQueueStore.getState().running).toEqual([
+      {
+        number: 12,
+        prompt_id: 'just-queued',
+        prompt: { node: {} },
+        extra: { extra_pnginfo: {} },
+        outputs_to_execute: ['9'],
+      },
+    ]);
+    expect(useQueueStore.getState().shadowQueueJobs['just-queued']).toMatchObject({
+      originalPromptId: 'just-queued',
+      status: 'pending',
+      sessionId: 'active-session',
+    });
+  });
+
   it('retains a running item when it leaves the backend queue before history arrives', async () => {
     const runningItem = {
       number: 1,

@@ -112,6 +112,7 @@ export function AppMenu({
   const [menuSectionsOpen, setMenuSectionsOpen] = useState({
     load: true,
     save: true,
+    models: true,
     server: false,
     info: true,
   });
@@ -119,6 +120,7 @@ export function AppMenu({
   // Refs for scrolling to sections
   const loadSectionRef = useRef<HTMLElement>(null);
   const saveSectionRef = useRef<HTMLElement>(null);
+  const modelsSectionRef = useRef<HTMLElement>(null);
   const serverSectionRef = useRef<HTMLElement>(null);
   const infoSectionRef = useRef<HTMLElement>(null);
   const prevMenuSectionsOpen = useRef(menuSectionsOpen);
@@ -132,6 +134,8 @@ export function AppMenu({
       setTimeout(() => loadSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     } else if (!prev.save && current.save) {
       setTimeout(() => saveSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+    } else if (!prev.models && current.models) {
+      setTimeout(() => modelsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     } else if (!prev.server && current.server) {
       setTimeout(() => serverSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     } else if (!prev.info && current.info) {
@@ -152,6 +156,7 @@ export function AppMenu({
       setMenuSectionsOpen({
         load: true,
         save: true,
+        models: true,
         server: false,
         info: true,
       });
@@ -453,6 +458,7 @@ export function AppMenu({
           fileInputRef={fileInputRef}
           loadSectionRef={loadSectionRef}
           saveSectionRef={saveSectionRef}
+          modelsSectionRef={modelsSectionRef}
           serverSectionRef={serverSectionRef}
           infoSectionRef={infoSectionRef}
           onDismissError={() => setError(null)}

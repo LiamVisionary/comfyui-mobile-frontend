@@ -1,5 +1,5 @@
-import { getImageUrl } from '@/api/client';
 import type { HistoryOutputImage } from '@/api/types';
+import { getHistoryImageUrl } from '@/utils/historyImageUrls';
 import { isHistoryEntryData, type UnifiedItem } from './types';
 import { isVideoFilename } from '@/utils/media';
 
@@ -94,7 +94,7 @@ export function getBatchSources(promptId: string, list: UnifiedItem[]): string[]
   const images = getDisplayableQueueOutputs(match.data.outputs.images ?? []);
   return images
     .filter((img: HistoryOutputImage) => img.type === 'output')
-    .map((img: HistoryOutputImage) => getImageUrl(img.filename, img.subfolder, img.type));
+    .map((img: HistoryOutputImage) => getHistoryImageUrl(img));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

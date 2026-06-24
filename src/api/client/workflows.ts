@@ -1,4 +1,6 @@
 import type { Workflow } from '../types';
+import { comfyRoute } from './base';
+import { decryptWorkflowFromStorage, encryptWorkflowForStorage } from '@/utils/workflowEncryption';
 
 const RECENT_WORKFLOWS_PATH = 'mobile/recent_workflows.json';
 const WORKFLOW_HIDDEN_PATH = 'mobile/workflow_hidden.json';
@@ -12,7 +14,7 @@ export interface UserDataFile {
 }
 
 export async function listUserWorkflows(): Promise<UserDataFile[]> {
-  const response = await fetch(`/api/v2/userdata?path=workflows`);
+  const response = await fetch(comfyRoute('/api/v2/userdata?path=workflows'));
   if (!response.ok) {
     // Folder may not exist yet
     if (response.status === 404) return [];
@@ -31,24 +33,26 @@ function encodeUserDataPath(path: string): string {
 }
 
 export async function loadUserWorkflow(filename: string): Promise<Workflow> {
-  const response = await fetch(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`, {
+  const response = await fetch(comfyRoute(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`), {
     cache: 'no-store',
   });
   if (!response.ok) throw new Error('Failed to load workflow');
-  return response.json();
+  const stored = await response.json();
+  return decryptWorkflowFromStorage<Workflow>(stored);
 }
 
 export async function saveUserWorkflow(filename: string, workflow: Workflow): Promise<void> {
-  const response = await fetch(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}?overwrite=true`, {
+  const encryptedWorkflow = await encryptWorkflowForStorage(workflow);
+  const response = await fetch(comfyRoute(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}?overwrite=true`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(workflow)
+    body: JSON.stringify(encryptedWorkflow)
   });
-  if (!response.ok) throw new Error('Failed to save workflow');
+  if (!response.ok) throw new Error('Failed to save encrypted workflow');
 }
 
 export async function deleteUserWorkflow(filename: string): Promise<void> {
-  const response = await fetch(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`, {
+  const response = await fetch(comfyRoute(`/api/userdata/${encodeUserDataPath('workflows/' + filename)}`), {
     method: 'DELETE'
   });
   if (!response.ok) throw new Error('Failed to delete workflow');
@@ -60,7 +64,7 @@ export async function deleteUserWorkflow(filename: string): Promise<void> {
 export async function renameUserWorkflowEntry(fromPath: string, toPath: string): Promise<void> {
   const src = encodeUserDataPath('workflows/' + fromPath);
   const dest = encodeUserDataPath('workflows/' + toPath);
-  const response = await fetch(`/api/userdata/${src}/move/${dest}?overwrite=false`, {
+  const response = await fetch(comfyRoute(`/api/userdata/${src}/move/${dest}?overwrite=false`), {
     method: 'POST',
   });
   if (response.status === 409) throw new Error('A file or folder with that name already exists');
@@ -99,14 +103,14 @@ export interface WorkflowTemplates {
 }
 
 export async function getWorkflowTemplates(): Promise<WorkflowTemplates> {
-  const response = await fetch(`/api/workflow_templates`);
+  const response = await fetch(comfyRoute('/api/workflow_templates'));
   if (!response.ok) throw new Error('Failed to fetch templates');
   return response.json();
 }
 
 export async function loadTemplateWorkflow(moduleName: string, templateName: string): Promise<Workflow> {
   const response = await fetch(
-    `/api/workflow_templates/${encodeURIComponent(moduleName)}/${encodeURIComponent(templateName)}`
+    comfyRoute(`/api/workflow_templates/${encodeURIComponent(moduleName)}/${encodeURIComponent(templateName)}`)
   );
   if (!response.ok) throw new Error('Failed to load template');
   return response.json();
@@ -116,7 +120,7 @@ export async function loadTemplateWorkflow(moduleName: string, templateName: str
 export async function loadWorkflowHiddenFromServer(): Promise<string[] | null | undefined> {
   try {
     const response = await fetch(
-      `/api/userdata/${encodeUserDataPath(WORKFLOW_HIDDEN_PATH)}`,
+      comfyRoute(`/api/userdata/${encodeUserDataPath(WORKFLOW_HIDDEN_PATH)}`),
       { cache: 'no-store' },
     );
     if (response.status === 404) return null;
@@ -132,7 +136,7 @@ export async function loadWorkflowHiddenFromServer(): Promise<string[] | null | 
 
 export async function saveWorkflowHiddenToServer(hidden: string[]): Promise<void> {
   const response = await fetch(
-    `/api/userdata/${encodeUserDataPath(WORKFLOW_HIDDEN_PATH)}?overwrite=true`,
+    comfyRoute(`/api/userdata/${encodeUserDataPath(WORKFLOW_HIDDEN_PATH)}?overwrite=true`),
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -145,7 +149,7 @@ export async function saveWorkflowHiddenToServer(hidden: string[]): Promise<void
 export async function loadRecentWorkflowsFromServer(): Promise<unknown[]> {
   try {
     const response = await fetch(
-      `/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}`,
+      comfyRoute(`/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}`),
       { cache: 'no-store' },
     );
     if (!response.ok) return [];
@@ -159,7 +163,7 @@ export async function loadRecentWorkflowsFromServer(): Promise<unknown[]> {
 export async function saveRecentWorkflowsToServer(entries: unknown[]): Promise<void> {
   try {
     await fetch(
-      `/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}?overwrite=true`,
+      comfyRoute(`/api/userdata/${encodeUserDataPath(RECENT_WORKFLOWS_PATH)}?overwrite=true`),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

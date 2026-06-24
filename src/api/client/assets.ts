@@ -1,4 +1,10 @@
 import type { Workflow } from '../types';
+import { comfyRoute } from './base';
+import {
+  decryptWorkflowEnvelope,
+  isEncryptedWorkflowEnvelope,
+  isWorkflow,
+} from '@/utils/imageWorkflowMetadata';
 
 export async function uploadImageFile(
   file: File,
@@ -16,7 +22,7 @@ export async function uploadImageFile(
     form.append('overwrite', options.overwrite ? 'true' : 'false');
   }
 
-  const response = await fetch(`/comfy/upload/image`, {
+  const response = await fetch(comfyRoute('/upload/image'), {
     method: 'POST',
     body: form
   });
@@ -136,6 +142,60 @@ export interface FileItem {
 
 export type AssetSource = 'output' | 'input' | 'temp';
 export type SortMode = 'modified' | 'modified-reverse' | 'name' | 'name-reverse' | 'size' | 'size-reverse';
+
+export interface WorkflowFavoriteRecord {
+  groupKey: string;
+  workflowHash: string;
+  inputHash: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  favoriteCount: number;
+  imageIds?: string[];
+  inputRefs: string[];
+  representativeImage: {
+    filename: string;
+    path: string;
+    source: string;
+    promptId?: string;
+    src?: string;
+  };
+  workflow: Workflow;
+}
+
+export async function listWorkflowFavorites(): Promise<WorkflowFavoriteRecord[]> {
+  const response = await fetch('/mobile/api/workflow-favorites', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Failed to load favorite workflows');
+  const data = await response.json();
+  return Array.isArray(data.favorites) ? data.favorites : [];
+}
+
+export async function getWorkflowFavorite(groupKey: string): Promise<WorkflowFavoriteRecord> {
+  const favorites = await listWorkflowFavorites();
+  const favorite = favorites.find((record) => record.groupKey === groupKey);
+  if (!favorite) throw new Error('Favorite workflow no longer exists');
+  return favorite;
+}
+
+export async function saveWorkflowFavorite(record: WorkflowFavoriteRecord): Promise<WorkflowFavoriteRecord> {
+  const response = await fetch('/mobile/api/workflow-favorites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(record),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || 'Failed to save favorite workflow');
+  }
+  return data.favorite as WorkflowFavoriteRecord;
+}
+
+export async function deleteWorkflowFavorite(groupKey: string): Promise<void> {
+  const response = await fetch(`/mobile/api/workflow-favorites?groupKey=${encodeURIComponent(groupKey)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) throw new Error('Failed to delete favorite workflow');
+}
 
 // Mobile Files API - browse output/input directories
 interface MobileFileItem {
@@ -349,7 +409,15 @@ export async function getFileWorkflow(
   if (!data.workflow) {
     throw new Error('No workflow metadata found');
   }
-  return data.workflow as Workflow;
+  if (isWorkflow(data.workflow)) {
+    return data.workflow;
+  }
+  if (isEncryptedWorkflowEnvelope(data.workflow)) {
+    const decrypted = await decryptWorkflowEnvelope(data.workflow);
+    if (decrypted) return decrypted;
+    throw new Error('Encrypted workflow metadata could not be decrypted');
+  }
+  throw new Error('Workflow metadata is not a loadable workflow');
 }
 
 export async function getFileWorkflowAvailability(

@@ -1,6 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { getImageUrl, getImagePreviewUrl } from '@/api/client';
 import type { Workflow } from '@/api/types';
 import { useQueueStore } from '@/hooks/useQueue';
 import { useOutputsStore } from '@/hooks/useOutputs';
@@ -28,6 +27,7 @@ import { getDisplayName } from '@/components/AppMenu/userWorkflowHelpers';
 import { getQueueCardHeaderGridClass, getQueueCardHeaderLabel } from './queueCardHeader';
 import { getHistoryImageFileId } from '@/utils/viewerImages';
 import { preloadQueueMedia } from './queueMediaHandoff';
+import { getHistoryImagePreviewUrl, getHistoryImageUrl } from '@/utils/historyImageUrls';
 
 // One entry in the queue item's image slot / tab bar.
 interface MediaTab {
@@ -312,10 +312,10 @@ function QueueCardComponent({
 
   const cardViewerImages = useMemo(() => (
     visibleImages.map((img: HistoryOutputImage) => ({
-      src: getImageUrl(img.filename, img.subfolder, img.type),
+      src: getHistoryImageUrl(img),
       displaySrc: isVideoFilename(img.filename)
         ? undefined
-        : getImagePreviewUrl(img.filename, img.subfolder, img.type),
+        : getHistoryImagePreviewUrl(img),
       alt: 'Generation',
       mediaType: getMediaType(img.filename)
     }))
@@ -331,7 +331,7 @@ function QueueCardComponent({
     if (!expanded) return;
     let cancelled = false;
     visibleImages.forEach((img: HistoryOutputImage) => {
-      const src = getImageUrl(img.filename, img.subfolder, img.type);
+      const src = getHistoryImageUrl(img);
       if (sizeFetchRef.current.has(src)) return;
       sizeFetchRef.current.add(src);
       fetch(src, { method: 'HEAD' })
@@ -361,7 +361,7 @@ function QueueCardComponent({
     const right = Math.max(8, window.innerWidth - rect.right);
     const menuSourceImages = savedImages.length > 0 ? savedImages : visibleImages;
     const menuImages = menuSourceImages.map(
-      (img: HistoryOutputImage) => getImageUrl(img.filename, img.subfolder, img.type),
+      (img: HistoryOutputImage) => getHistoryImageUrl(img),
     );
     const firstSrc = menuImages[0] || '';
     onOpenMenu({
@@ -513,7 +513,7 @@ function QueueCardComponent({
     if (!expanded) return;
     const slotImg = slotTab?.img;
     if (!slotImg || !isVideoFilename(slotImg.filename)) return;
-    const src = getImageUrl(slotImg.filename, slotImg.subfolder, slotImg.type);
+    const src = getHistoryImageUrl(slotImg);
     if (playedVideoSources.current.has(src)) return;
     const videoEl = videoRefs.current.get(src);
     if (!videoEl) return;
@@ -531,11 +531,11 @@ function QueueCardComponent({
   }, [expanded, slotTab]);
   const promptInputImages = useMemo<PromptPreviewInputImage[]>(
     () => inputMediaEntries.map(({ img, index }) => {
-      const src = getImageUrl(img.filename, img.subfolder, img.type);
+      const src = getHistoryImageUrl(img);
       return {
         key: `input-${index}`,
         src,
-        displaySrc: getImagePreviewUrl(img.filename, img.subfolder, img.type),
+        displaySrc: getHistoryImagePreviewUrl(img),
         isDownloaded: Boolean(downloaded[src]),
         index,
       };
@@ -665,11 +665,11 @@ function QueueCardComponent({
                     // The completion websocket event arrives before history, so
                     // use its locally measured duration during that handoff.
                     const showDurationLabel = hasCompleted && img.type === 'output' && durationLabel;
-                    const src = getImageUrl(img.filename, img.subfolder, img.type);
+                    const src = getHistoryImageUrl(img);
                     // Display the fast WebP; keep `src` (PNG) for click/download/identity.
                     const displaySrc = isVideoFilename(img.filename)
                       ? src
-                      : getImagePreviewUrl(img.filename, img.subfolder, img.type);
+                      : getHistoryImagePreviewUrl(img);
                     const isDownloaded = downloaded[src];
                     const isFavorited = favoriteIds.has(getHistoryImageFileId(img));
                     const sizeBytes = outputFileSizes[src];

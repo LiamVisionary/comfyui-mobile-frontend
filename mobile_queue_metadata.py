@@ -99,9 +99,10 @@ def sanitize_entry(prompt_id: str, entry: dict[str, Any], previous: dict[str, An
     if isinstance(client_id, str) and client_id:
         result["clientId"] = client_id[:160]
 
-    workflow_diff = entry.get("workflowDiff")
-    if isinstance(workflow_diff, dict):
-        result["workflowDiff"] = workflow_diff
+    # Queue workflow diffs include full prompt text. Keep queue cards useful
+    # without persisting generation prompts server-side.
+    if entry.get("workflowDiffRedacted") is True or isinstance(entry.get("workflowDiff"), dict):
+        result["workflowDiffRedacted"] = True
 
     return result
 
@@ -145,9 +146,17 @@ def get_prompt_metadata(cache_path: str, prompt_ids: list[str] | None = None) ->
     cache = load_cache(cache_path)
     prompts = cache["prompts"]
     if prompt_ids is None:
-        return prompts
+        return {
+            prompt_id: sanitize_entry(prompt_id, entry, entry)
+            for prompt_id, entry in prompts.items()
+            if isinstance(prompt_id, str) and isinstance(entry, dict)
+        }
     wanted = set(filter(None, (_normalize_prompt_id(value) for value in prompt_ids)))
-    return {prompt_id: prompts[prompt_id] for prompt_id in wanted if prompt_id in prompts}
+    return {
+        prompt_id: sanitize_entry(prompt_id, prompts[prompt_id], prompts[prompt_id])
+        for prompt_id in wanted
+        if prompt_id in prompts and isinstance(prompts[prompt_id], dict)
+    }
 
 
 def normalize_prompt_ids(value: Any) -> list[str] | None:

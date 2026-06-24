@@ -52,6 +52,12 @@ import { QueueCard } from '../QueueCard';
 
 const imageA = { filename: 'a.png', subfolder: 'images', type: 'output' };
 const imageB = { filename: 'b.png', subfolder: 'images', type: 'output' };
+const nativeImage = {
+  filename: 'native.png',
+  subfolder: '',
+  type: 'output',
+  fullUrl: '/image/native.png?token=secretless',
+};
 
 const doneItem: UnifiedItem = {
   id: 'swap-prompt',
@@ -60,6 +66,17 @@ const doneItem: UnifiedItem = {
     prompt_id: 'swap-prompt',
     timestamp: 1,
     outputs: { images: [imageA, imageB] },
+    prompt: {},
+  },
+};
+
+const nativeDoneItem: UnifiedItem = {
+  id: 'swap-prompt',
+  status: 'done',
+  data: {
+    prompt_id: 'swap-prompt',
+    timestamp: 1,
+    outputs: { images: [nativeImage] },
     prompt: {},
   },
 };
@@ -132,5 +149,24 @@ describe('QueueCard image-slot tab swap', () => {
     });
     expect(container.querySelector('img')?.getAttribute('src')).toContain('a.png');
     expect(container.querySelector('.animate-spin')).toBeNull();
+  });
+
+  it('renders native wrapper images from fullUrl instead of rebuilding /view URLs', async () => {
+    await act(async () => {
+      root.render(
+        <QueueCard
+          item={nativeDoneItem}
+          isActuallyRunning={false}
+          progress={0}
+          viewerImages={[]}
+          runningImages={[]}
+          onOpenMenu={() => {}}
+          downloaded={{}}
+          isTopDoneItem
+        />,
+      );
+    });
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/image/native.png?token=secretless');
   });
 });

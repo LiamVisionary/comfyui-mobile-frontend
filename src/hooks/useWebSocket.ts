@@ -99,7 +99,11 @@ export async function runQueuePollTick(
   fetchHistory: () => Promise<void>,
 ): Promise<void> {
   const queueState = useQueueStore.getState();
-  if (queueState.running.length === 0 && queueState.completing.length === 0) {
+  if (
+    queueState.running.length === 0 &&
+    queueState.pending.length === 0 &&
+    queueState.completing.length === 0
+  ) {
     return;
   }
   await fetchQueue();
@@ -150,6 +154,7 @@ export function useWebSocket() {
   const reconnectingSinceRef = useRef<number | null>(null);
   const unmountingRef = useRef(false);
   const promptStartedAtRef = useRef<Record<string, number>>({});
+  const completedNativePromptIdsRef = useRef<Set<string>>(new Set());
 
   // Use refs for store actions to avoid recreating callbacks
   const storeActionsRef = useRef(snapshotStoreActions());
@@ -172,7 +177,13 @@ export function useWebSocket() {
         phase?: string;
       }>).detail;
       const promptId = detail?.promptId;
-      if (!promptId) return;
+      if (!promptId || completedNativePromptIdsRef.current.has(promptId)) return;
+      if (detail.phase === 'done' || Number(detail.overallPercent) >= 100) {
+        // Let the completion event own the terminal transition. Treating a final
+        // 100% progress tick as active execution makes the card flash 100%, clear,
+        // then reappear as a new 0% run if another poll races completion.
+        return;
+      }
       const stepPercent = Math.min(100, Math.max(0, Math.round(Number(detail.currentStepPercent ?? 0))));
       const overallPercent = Math.min(100, Math.max(0, Math.round(Number(detail.overallPercent ?? 0))));
       useWorkflowStore.setState((state) => ({
@@ -200,6 +211,7 @@ export function useWebSocket() {
       }>).detail;
       const promptId = detail?.promptId;
       if (!promptId) return;
+      completedNativePromptIdsRef.current.add(promptId);
       const images = detail.images ?? [];
       const actions = storeActionsRef.current;
       if (images.length > 0) {

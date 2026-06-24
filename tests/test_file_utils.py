@@ -156,6 +156,19 @@ class TestNonRecursiveListing:
         assert file_entry["type"] == "image"
         assert file_entry["size"] > 0
 
+    def test_encrypted_image_sidecar_lists_as_logical_image(self, tree):
+        os.remove(os.path.join(str(tree), "photo.png"))
+        encrypted = os.path.join(str(tree), "photo.png.zenc")
+        with open(encrypted, "wb") as f:
+            f.write(b"encrypted-bytes")
+
+        results = list_files(str(tree), str(tree))
+        file_entry = next(r for r in results if r["name"] == "photo.png")
+        assert file_entry["path"] == "photo.png"
+        assert file_entry["type"] == "image"
+        assert file_entry["size"] == len(b"encrypted-bytes")
+        assert "photo.png.zenc" not in [r["name"] for r in results]
+
 
 class TestRecursiveListing:
     def test_recursive_includes_nested_files(self, tree):

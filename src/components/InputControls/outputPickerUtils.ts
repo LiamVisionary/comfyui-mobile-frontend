@@ -14,3 +14,21 @@ export function isOutputFileSelectable(
   if (fileType === "folder") return false;
   return supportsVideoUpload ? fileType === "video" : fileType === "image";
 }
+
+export function sortOutputPickerFiles(
+  files: FileItem[],
+  supportsVideoUpload: boolean,
+): FileItem[] {
+  return [...files].sort((a, b) => {
+    const aSelectable = isOutputFileSelectable(a.type, supportsVideoUpload);
+    const bSelectable = isOutputFileSelectable(b.type, supportsVideoUpload);
+
+    if (aSelectable !== bSelectable) return aSelectable ? -1 : 1;
+
+    const aDate = a.date ?? 0;
+    const bDate = b.date ?? 0;
+    if (aDate !== bDate) return bDate - aDate;
+
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  });
+}

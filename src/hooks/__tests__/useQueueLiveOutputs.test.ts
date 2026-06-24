@@ -92,6 +92,13 @@ describe('queue live prompt outputs', () => {
     expect(useQueueStore.getState().completionDurations.promptA).toBe(1.75);
     expect(useQueueStore.getState().livePromptOutputs.promptA).toEqual([image('final.png')]);
 
+    useQueueStore.getState().removeRunning('promptA');
+
+    expect(useQueueStore.getState().running).toEqual([]);
+    expect(useQueueStore.getState().completing).toEqual([runningItem]);
+    expect(useQueueStore.getState().completionDurations.promptA).toBe(1.75);
+    expect(useQueueStore.getState().livePromptOutputs.promptA).toEqual([image('final.png')]);
+
     useQueueStore.getState().markPromptCompleted('promptA');
 
     expect(useQueueStore.getState().completing).toEqual([]);

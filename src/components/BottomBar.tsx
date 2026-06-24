@@ -13,6 +13,7 @@ import { PinnedWidgetButton } from "./BottomBar/PinnedWidgetButton";
 import { RunButton } from "./BottomBar/RunButton";
 import { RunCountSelector } from "./BottomBar/RunCountSelector";
 import { SkipButton } from "./BottomBar/SkipButton";
+import { selectSingleComfyProgressPromptId } from "@/utils/queueProgress";
 
 export type BottomBarProps = {
   currentPanel: 'workflow' | 'queue' | 'outputs';
@@ -61,11 +62,7 @@ export function BottomBar(props: BottomBarProps) {
   const barRef = useRef<HTMLDivElement>(null);
 
   const queueSize = pending.length + running.length;
-  const comfyProgressRunning = running.filter((item) => {
-    const backend = String(item.extra?.backend || '').toLowerCase();
-    return !backend.includes('native') && !backend.includes('mlx');
-  });
-  const fallbackRunKey = comfyProgressRunning.length === 1 ? comfyProgressRunning[0].prompt_id : null;
+  const fallbackRunKey = selectSingleComfyProgressPromptId(running);
   const runKey = executingPromptId || fallbackRunKey;
   const hasComfyProgressRun = isExecuting || Boolean(fallbackRunKey);
   const nativeOverallProgress = runKey ? nativeOverallProgressByPrompt[runKey] : undefined;

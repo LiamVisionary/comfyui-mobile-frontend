@@ -25,6 +25,7 @@ import { getCachedNodeTypes, setCachedNodeTypes } from './utils/nodeTypesCache';
 import { buildOutputPreferredViewerImages, type ViewerImage } from './utils/viewerImages';
 import { OutputsPanel } from './components/OutputsPanel';
 import { useOutputsStore } from './hooks/useOutputs';
+import { WorkflowUnlockGate } from './components/WorkflowUnlockGate';
 
 function App() {
   const currentPanel = useNavigationStore((s) => s.currentPanel);
@@ -306,6 +307,7 @@ function App() {
 
       <ConnectionLostOverlay />
       <NoWorkflowImageDialog />
+      <WorkflowUnlockGate />
     </div>
   );
 }

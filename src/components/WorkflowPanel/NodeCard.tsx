@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WorkflowInput, WorkflowNode } from '@/api/types';
+import type { HistoryOutputImage, WorkflowInput, WorkflowNode } from '@/api/types';
 import { useWorkflowStore, getWidgetDefinitions, getInputWidgetDefinitions, getWidgetIndexForInput, findSeedWidgetIndex, resolveSubgraphPlaceholderWidgetDefs, resolveSubgraphPlaceholderInputWidgetDefs, resolveSubgraphProxyWidgetDefs, resolveSubgraphProxyInputWidgetDefs } from '@/hooks/useWorkflow';
 import type { LinkedWidgetRoute, ProxyWidgetRoute } from '@/utils/widgetDefinitions';
 import { isSubgraphPlaceholder } from '@/utils/canonicalWorkflowOps';
@@ -11,7 +11,6 @@ import { useWorkflowErrorsStore } from '@/hooks/useWorkflowErrors';
 import { useOverallProgress } from '@/hooks/useOverallProgress';
 import { useQueueStore } from '@/hooks/useQueue';
 import { useNodeErrorPopover } from '@/hooks/useNodeErrorPopover';
-import { getImageUrl, getImagePreviewUrl } from '@/api/client';
 import { getMediaType } from '@/utils/media';
 import { NodeCardMenu } from './NodeCard/Menu';
 import { NodeCardErrorPopover } from './NodeCard/ErrorPopover';
@@ -27,8 +26,10 @@ import { resolveLoadImagePreview } from '@/utils/loadImagePreview';
 import { requireHierarchicalKey } from '@/utils/itemKeys';
 import { hexToRgba } from '@/utils/grouping';
 import { resolveWorkflowColor, themeColors } from '@/theme/colors';
+import { isComfyProgressQueueItem } from '@/utils/queueProgress';
+import { getHistoryImagePreviewUrl, getHistoryImageUrl } from '@/utils/historyImageUrls';
 
-const EMPTY_IMAGES: Array<{ filename: string; subfolder: string; type: string }> = [];
+const EMPTY_IMAGES: HistoryOutputImage[] = [];
 type ImageLike = (typeof EMPTY_IMAGES)[number];
 const EMPTY_DURATION_STATS: Record<string, { avgMs: number; count: number }> = {};
 
@@ -96,9 +97,9 @@ export const NodeCard = memo(function NodeCard({
   );
   const storeIsExecuting = useWorkflowStore((s) => (isExecuting ? s.isExecuting : false));
   const firstRunningPromptId = useQueueStore((s) =>
-    isExecuting ? (s.running[0]?.prompt_id ?? null) : null,
+    isExecuting ? (s.running.find(isComfyProgressQueueItem)?.prompt_id ?? null) : null,
   );
-  const hasRunning = useQueueStore((s) => (isExecuting ? s.running.length > 0 : false));
+  const hasRunning = useQueueStore((s) => (isExecuting ? s.running.some(isComfyProgressQueueItem) : false));
   const runKey = executingPromptId || firstRunningPromptId;
   // With workflow null the hook is inert (no interval) — only the executing
   // card runs a ticker instead of one per card.
@@ -179,7 +180,7 @@ export const NodeCard = memo(function NodeCard({
     if (latestKey === previewKey) return;
     // Preload the same WebP preview the inline OutputPreview displays, so the
     // gate reflects (and primes the cache for) the fast image, not the full PNG.
-    const nextSrc = getImagePreviewUrl(latestImage.filename, latestImage.subfolder, latestImage.type);
+    const nextSrc = getHistoryImagePreviewUrl(latestImage);
     const img = new Image();
     img.onload = () => setPreviewImage(latestImage);
     img.src = nextSrc;
@@ -458,13 +459,13 @@ export const NodeCard = memo(function NodeCard({
   const previewList = effectivePreviewImage
     ? (() => {
         const { filename, subfolder, type } = effectivePreviewImage;
-        const src = getImageUrl(filename, subfolder, type);
+        const src = getHistoryImageUrl(effectivePreviewImage);
         const filePath = subfolder ? `${subfolder}/${filename}` : filename;
         const mediaType = getMediaType(filename);
         return [{
           src,
           displaySrc: mediaType === 'image'
-            ? getImagePreviewUrl(filename, subfolder, type)
+            ? getHistoryImagePreviewUrl(effectivePreviewImage)
             : undefined,
           alt: displayName,
           filename,

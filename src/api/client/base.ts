@@ -14,14 +14,36 @@ function getOrCreateClientId(): string {
 
 export const clientId = getOrCreateClientId();
 
+export const comfyRoute = (path: string): string => {
+  if (!path.startsWith('/')) return path;
+  if (path.startsWith('/comfy/')) return path;
+  if (typeof window !== 'undefined') {
+    const port = window.location?.port;
+    // When the mobile frontend is served directly by ComfyUI, /comfy/* does not
+    // exist. When it is served through the private wrapper, Comfy endpoints must
+    // be namespaced under /comfy to avoid the wrapper-owned /api routes.
+    if (port === '8188') return path;
+  }
+  if (
+    path === '/system_stats' ||
+    path.startsWith('/api/') ||
+    path.startsWith('/upload/') ||
+    path.startsWith('/view') ||
+    path.startsWith('/ws')
+  ) {
+    return `/comfy${path}`;
+  }
+  return path;
+};
+
 export async function getNodeTypes(): Promise<NodeTypes> {
-  const response = await fetch(`/api/object_info`);
+  const response = await fetch(comfyRoute('/api/object_info'));
   if (!response.ok) throw new Error('Failed to fetch node types');
   return response.json();
 }
 
 export function getImageUrl(filename: string, subfolder: string, type: string): string {
-  const url = `/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${encodeURIComponent(type)}`;
+  const url = comfyRoute(`/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${encodeURIComponent(type)}`);
   // Append a cache-bust token if this filename was deleted and (possibly) reused
   // by a later generation, so the browser doesn't serve the stale deleted image.
   const token = getImageCacheToken(filename, subfolder, type);
@@ -87,7 +109,8 @@ export function connectWebSocket(
   onBinaryMessage?: (data: ArrayBuffer) => void,
 ): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws?clientId=${clientId}`;
+  const wsPath = comfyRoute(`/ws?clientId=${clientId}`);
+  const wsUrl = `${protocol}//${window.location.host}${wsPath}`;
 
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';

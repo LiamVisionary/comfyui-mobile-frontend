@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { detectNativeMlxBigLoveKlein3, queuePrompt, searchUserImagesByPrompt } from '@/api/client';
+import { detectNativeMlxBigLoveKlein3, getHistory, queuePrompt, searchUserImagesByPrompt } from '@/api/client';
 
 describe('searchUserImagesByPrompt', () => {
   afterEach(() => {
@@ -90,8 +90,86 @@ describe('detectNativeMlxBigLoveKlein3', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const call = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit | undefined];
     const [url, init] = call;
-    expect(String(url)).toBe('/api/prompt');
+    expect(String(url)).toBe('/comfy/api/prompt');
     const payload = JSON.parse(String(init?.body));
     expect(payload.prompt).toStrictEqual(bigLovePrompt);
+  });
+
+  it('rejects partial-success prompt responses with node validation errors', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      prompt_id: 'partial-prompt',
+      number: 0,
+      node_errors: {
+        '9': {
+          errors: [{
+            type: 'required_input_missing',
+            message: 'Required input is missing',
+            details: 'images',
+            extra_info: { input_name: 'images' },
+          }],
+        },
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(queuePrompt({ prompt: bigLovePrompt })).rejects.toThrow(
+      'Prompt validation failed for 1 node',
+    );
+  });
+});
+
+describe('getHistory', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps active native jobs out of history so running jobs do not become prompt errors', async () => {
+    const activeRecord = {
+      id: 'native-running',
+      status: 'running',
+      created_at: '2026-06-23T19:00:00Z',
+      image_urls: [],
+    };
+    const completedRecord = {
+      id: 'native-success',
+      status: 'success',
+      created_at: '2026-06-23T19:01:00Z',
+      finished_at: '2026-06-23T19:01:04Z',
+      image_urls: ['/image/native-success.png'],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/history')) {
+        return new Response(JSON.stringify({ history: [activeRecord, completedRecord] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected request ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const history = await getHistory();
+
+    expect(history['native-running']).toBeUndefined();
+    expect(history['native-success']).toMatchObject({
+      outputs: {
+        native_mlx: {
+          images: [
+            {
+              filename: 'native-success.png',
+              fullUrl: '/image/native-success.png',
+            },
+          ],
+        },
+      },
+      status: {
+        status_str: 'success',
+        completed: true,
+      },
+    });
   });
 });

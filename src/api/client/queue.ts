@@ -1,5 +1,7 @@
 import type { QueueInfo, History, HistoryOutputImage } from '../types';
 import type { QueueWorkflowDiff } from '@/utils/workflowDiff';
+import { comfyRoute } from './base';
+import { encryptWorkflowForStorage, isEncryptedWorkflow } from '@/utils/workflowEncryption';
 
 function stringInput(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
@@ -127,12 +129,13 @@ export function detectNativeMlxBigLoveKlein3(prompt: Record<string, unknown>): N
   // forced BigLove Klein3 MXFP8 Mobile runs to 1 step, which met latency targets
   // but produced visibly glitchy/blurry edits. The native sidecar remains the
   // selected backend; quality must follow the graph setting.
-  const steps = Math.max(1, Math.min(12, Math.round(numberInput(sampler?.inputs?.steps) ?? 4)));
+  const steps = Math.round(numberInput(sampler?.inputs?.steps) ?? 4);
   const seed = numberInput(sampler?.inputs?.seed) ?? undefined;
-  const width = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.width) ?? 768);
-  const height = Math.round(numberInput(nodes.find((node) => node.class_type === 'EmptyLatentImage')?.inputs?.height) ?? 512);
+  const latent = nodes.find((node) => ['EmptyLatentImage', 'EmptyFlux2LatentImage', 'EmptySD3LatentImage'].includes(String(node.class_type || '')));
+  const width = Math.round(numberInput(latent?.inputs?.width) ?? 512);
+  const height = Math.round(numberInput(latent?.inputs?.height) ?? 512);
 
-  const guidance = Math.max(0, Math.min(20, numberInput(sampler?.inputs?.cfg) ?? numberInput(sampler?.inputs?.guidance) ?? 1));
+  const guidance = numberInput(sampler?.inputs?.cfg) ?? numberInput(sampler?.inputs?.guidance) ?? 1;
 
   return { imagePath, prompt: promptText, negativePrompt, steps, seed, width, height, guidance };
 }
@@ -145,7 +148,7 @@ function nativeJobImages(job: { outputs?: unknown; image_urls?: unknown; id?: un
     ? job.image_urls.map((url) => String(url || '')).filter(Boolean)
     : [];
   const id = String(job.id || 'native');
-  const paths = fromOutputs.length > 0 ? fromOutputs : fromUrls;
+  const paths = fromUrls.length > 0 ? fromUrls : fromOutputs;
   return paths.map((value, index) => {
     const bare = value.split('?')[0] || '';
     const filename = bare.split('/').pop() || `${id}-${index}.png`;
@@ -275,9 +278,11 @@ function nativeRecordsToHistory(records: Array<Record<string, unknown>>): Histor
   for (const item of records) {
     const id = String(item?.id || item?.prompt_id || '');
     if (!id) continue;
+    const status = String(item?.status || '');
+    if (status === 'queued' || status === 'running') continue;
     const created = Date.parse(String(item?.created_at || '')) || Date.now();
     const finished = Date.parse(String(item?.finished_at || '')) || created;
-    const isError = item?.status === 'error' || item?.status === 'failed';
+    const isError = status === 'error' || status === 'failed';
     history[id] = {
       prompt: nativeHistoryPrompt(item, id),
       outputs: { native_mlx: { images: nativeRecordToImages(item) } },
@@ -295,7 +300,7 @@ function nativeRecordsToHistory(records: Array<Record<string, unknown>>): Histor
 }
 
 export async function getQueue(): Promise<QueueInfo> {
-  const response = await fetch(`/api/queue`);
+  const response = await fetch(comfyRoute('/api/queue'));
   if (!response.ok) throw new Error('Failed to fetch queue');
   const queue = await response.json() as QueueInfo;
   const nativeRecords = await getNativeZImageHistory(20);
@@ -312,8 +317,8 @@ export async function getQueue(): Promise<QueueInfo> {
 
 export async function getHistory(maxItems?: number): Promise<History> {
   const url = maxItems
-    ? `/api/history?max_items=${maxItems}`
-    : `/api/history`;
+    ? comfyRoute(`/api/history?max_items=${maxItems}`)
+    : comfyRoute('/api/history');
   const [response, nativeRecords] = await Promise.all([
     fetch(url),
     getNativeZImageHistory(maxItems ?? 50),
@@ -342,11 +347,11 @@ export async function getHistoryCount(): Promise<number | null> {
 }
 
 export async function interruptExecution(): Promise<void> {
-  await fetch(`/api/interrupt`, { method: 'POST' });
+  await fetch(comfyRoute('/api/interrupt'), { method: 'POST' });
 }
 
 export async function clearQueue(): Promise<void> {
-  await fetch(`/api/queue`, {
+  await fetch(comfyRoute('/api/queue'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clear: true })
@@ -354,7 +359,7 @@ export async function clearQueue(): Promise<void> {
 }
 
 export async function deleteQueueItem(promptId: string): Promise<void> {
-  await fetch(`/api/queue`, {
+  await fetch(comfyRoute('/api/queue'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ delete: [promptId] })
@@ -371,6 +376,104 @@ export interface PromptQueueResponse {
   prompt_id?: string;
   number?: number;
   native_mlx?: boolean;
+  backend?: string;
+  node_errors?: unknown;
+}
+
+export interface PromptNodeError {
+  type: string;
+  message: string;
+  details: string;
+  inputName?: string;
+}
+
+type PromptErrorResponse = {
+  error?: unknown;
+  message?: unknown;
+  details?: unknown;
+  node_errors?: unknown;
+};
+type PromptResponseData = PromptQueueResponse & PromptErrorResponse;
+
+export function getPromptResponseErrorMessage(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const details = value as { message?: unknown; error?: unknown; details?: unknown };
+    if (typeof details.message === 'string') return details.message;
+    if (typeof details.error === 'string') return details.error;
+    if (typeof details.details === 'string') return details.details;
+  }
+  return null;
+}
+
+export function extractPromptNodeErrors(value: unknown): Record<string, PromptNodeError[]> {
+  const response = value && typeof value === 'object'
+    ? value as PromptErrorResponse
+    : null;
+  const nodeErrors = response?.node_errors;
+  if (!nodeErrors || typeof nodeErrors !== 'object' || Array.isArray(nodeErrors)) return {};
+
+  const parsed: Record<string, PromptNodeError[]> = {};
+  for (const [nodeId, nodeError] of Object.entries(nodeErrors as Record<string, unknown>)) {
+    const errorsArray = Array.isArray(nodeError)
+      ? nodeError
+      : (typeof nodeError === 'object'
+          && nodeError !== null
+          && 'errors' in nodeError
+          && Array.isArray((nodeError as { errors?: unknown[] }).errors))
+        ? (nodeError as { errors: unknown[] }).errors
+        : [];
+
+    if (errorsArray.length === 0) continue;
+    parsed[nodeId] = errorsArray.map((raw) => {
+      const err = raw && typeof raw === 'object'
+        ? raw as {
+            type?: unknown;
+            message?: unknown;
+            details?: unknown;
+            extra_info?: { input_name?: unknown };
+          }
+        : {};
+      return {
+        type: typeof err.type === 'string' ? err.type : 'prompt_validation',
+        message: typeof err.message === 'string' ? err.message : 'Prompt validation failed',
+        details: typeof err.details === 'string' ? err.details : '',
+        inputName: typeof err.extra_info?.input_name === 'string'
+          ? err.extra_info.input_name
+          : undefined,
+      };
+    });
+  }
+  return parsed;
+}
+
+export function countPromptNodeErrors(errors: Record<string, PromptNodeError[]>): number {
+  return Object.values(errors).reduce((total, list) => total + list.length, 0);
+}
+
+export function formatPromptNodeErrorsMessage(errors: Record<string, PromptNodeError[]>): string {
+  const count = countPromptNodeErrors(errors);
+  return `Prompt validation failed for ${count} node${count === 1 ? '' : 's'}. ComfyUI queued only the valid branch, so no image will be produced until the highlighted node error is fixed.`;
+}
+
+async function encryptPromptRequestWorkflow(
+  request: PromptQueueRequest,
+): Promise<PromptQueueRequest> {
+  const workflow = (request.extra_data as { extra_pnginfo?: { workflow?: unknown } } | undefined)
+    ?.extra_pnginfo
+    ?.workflow;
+  if (!workflow || isEncryptedWorkflow(workflow)) return request;
+  const encryptedWorkflow = await encryptWorkflowForStorage(workflow);
+  return {
+    ...request,
+    extra_data: {
+      ...request.extra_data,
+      extra_pnginfo: {
+        ...((request.extra_data?.extra_pnginfo as Record<string, unknown> | undefined) ?? {}),
+        workflow: encryptedWorkflow,
+      },
+    },
+  };
 }
 
 export async function queuePrompt(
@@ -381,19 +484,27 @@ export async function queuePrompt(
   // Comfy-shaped queue/history lifecycle. Browser-side direct /api/generate made
   // native jobs bypass Comfy websocket/history semantics, causing missing output
   // handoff and phantom estimated progress loops.
-  const response = await fetch('/api/prompt', {
+  const encryptedRequest = await encryptPromptRequestWorkflow(request);
+  const response = await fetch(comfyRoute('/api/prompt'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+    body: JSON.stringify(encryptedRequest),
   });
+  const data = await response.json().catch(() => null) as PromptResponseData | null;
+  const nodeErrors = extractPromptNodeErrors(data);
   if (!response.ok) {
-    const data = await response.json().catch(() => null) as { error?: unknown } | null;
-    const message = typeof data?.error === 'string'
-      ? data.error
-      : 'Failed to queue prompt';
+    const message = getPromptResponseErrorMessage(data?.error ?? data?.message ?? data?.details)
+      ?? (countPromptNodeErrors(nodeErrors) > 0 ? formatPromptNodeErrorsMessage(nodeErrors) : null)
+      ?? 'Failed to queue prompt';
     throw new Error(message);
   }
-  return response.json();
+  if (countPromptNodeErrors(nodeErrors) > 0) {
+    throw new Error(
+      getPromptResponseErrorMessage(data?.error ?? data?.message ?? data?.details)
+        ?? formatPromptNodeErrorsMessage(nodeErrors),
+    );
+  }
+  return data ?? {};
 }
 
 export interface QueuePromptMetadata {
@@ -446,7 +557,7 @@ export async function remapQueuePromptMetadata(
 
 
 export async function deleteHistoryItem(promptId: string): Promise<void> {
-  await fetch(`/api/history`, {
+  await fetch(comfyRoute('/api/history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ delete: [promptId] })
@@ -455,7 +566,7 @@ export async function deleteHistoryItem(promptId: string): Promise<void> {
 
 export async function deleteHistoryItems(promptIds: string[]): Promise<void> {
   if (promptIds.length === 0) return;
-  await fetch(`/api/history`, {
+  await fetch(comfyRoute('/api/history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ delete: promptIds })
@@ -463,7 +574,7 @@ export async function deleteHistoryItems(promptIds: string[]): Promise<void> {
 }
 
 export async function clearHistory(): Promise<void> {
-  await fetch(`/api/history`, {
+  await fetch(comfyRoute('/api/history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ clear: true })

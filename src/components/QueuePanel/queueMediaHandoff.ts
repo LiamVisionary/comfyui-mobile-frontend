@@ -1,5 +1,5 @@
-import { getImagePreviewUrl, getImageUrl } from '@/api/client';
 import type { HistoryOutputImage } from '@/api/types';
+import { getHistoryImagePreviewUrl, getHistoryImageUrl } from '@/utils/historyImageUrls';
 import { isVideoFilename } from '@/utils/media';
 import { getQueueImageKey } from './queueUtils';
 
@@ -35,7 +35,7 @@ const PRELOAD_RETRY_MS = 250;
 const PRELOAD_TIMEOUT_MS = 6000;
 
 function preloadImage(image: HistoryOutputImage): Promise<void> {
-  const url = getImagePreviewUrl(image.filename, image.subfolder, image.type);
+  const url = getHistoryImagePreviewUrl(image);
   return new Promise((resolve) => {
     let settled = false;
     let attempts = 0;
@@ -79,7 +79,7 @@ function preloadImage(image: HistoryOutputImage): Promise<void> {
 }
 
 function preloadVideo(video: HistoryOutputImage): Promise<void> {
-  const url = getImageUrl(video.filename, video.subfolder, video.type);
+  const url = getHistoryImageUrl(video);
   return new Promise((resolve) => {
     let settled = false;
     let attempts = 0;

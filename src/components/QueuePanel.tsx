@@ -20,6 +20,7 @@ import { resolveQueueExecutionContext } from './QueuePanel/executionContext';
 import { CloseIcon } from './icons';
 import * as api from '@/api/client';
 import { buildReenqueueRequest } from './QueuePanel/queueReenqueue';
+import { selectSingleComfyProgressPromptId } from '@/utils/queueProgress';
 
 interface QueuePanelProps {
   visible: boolean;
@@ -61,18 +62,13 @@ export const QueuePanel = memo(function QueuePanel({ visible, onImageClick }: Qu
     () => new Set(running.map((item) => item.prompt_id)),
     [running],
   );
-  const comfyProgressEligibleRunning = useMemo(() => (
-    running.filter((item) => {
-      const backend = String(item.extra?.backend || '').toLowerCase();
-      return !backend.includes('native') && !backend.includes('mlx');
-    })
-  ), [running]);
   // Only infer a Comfy executing id for real Comfy queue items. Native MLX jobs
   // finish through the wrapper and do not emit Comfy progress events; treating
   // them as Comfy executions makes the estimated progress bar fill/reset forever.
-  const fallbackExecutingId = comfyProgressEligibleRunning.length === 1
-    ? comfyProgressEligibleRunning[0].prompt_id
-    : null;
+  const fallbackExecutingId = useMemo(
+    () => selectSingleComfyProgressPromptId(running),
+    [running],
+  );
   const executionContext = useWorkflowStore(
     useShallow((s) => (
       resolveQueueExecutionContext({

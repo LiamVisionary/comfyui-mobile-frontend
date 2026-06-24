@@ -1,9 +1,9 @@
-import { getImagePreviewUrl } from '@/api/client';
 import { useGenerationSettingsStore } from '@/hooks/useGenerationSettings';
+import { getHistoryImagePreviewUrl } from '@/utils/historyImageUrls';
 
 interface NodeCardOutputPreviewProps {
   show: boolean;
-  previewImage: { filename: string; subfolder: string; type: string } | null;
+  previewImage: { filename: string; subfolder: string; type: string; fullUrl?: string } | null;
   latentPreviewUrl?: string | null;
   previewText?: string | null;
   displayName: string;
@@ -30,7 +30,7 @@ export function NodeCardOutputPreview({
   if (!show || (!previewImage && !previewText && !latentPreviewUrl)) return null;
 
   const displaySrc = previewImage
-    ? getImagePreviewUrl(previewImage.filename, previewImage.subfolder, previewImage.type)
+    ? getHistoryImagePreviewUrl(previewImage)
     : latentPreviewUrl;
 
   return (

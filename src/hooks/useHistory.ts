@@ -8,6 +8,8 @@ import { useWorkflowErrorsStore } from '@/hooks/useWorkflowErrors';
 import { HIDDEN_WORKFLOW_EXTRA_DATA_KEY } from '@/utils/workflowHidden';
 import { useOutputsStore } from '@/hooks/useOutputs';
 import { bustImageCache } from '@/utils/imageCacheBust';
+import { isWorkflow } from '@/utils/imageWorkflowMetadata';
+import { decryptWorkflowFromStorage, isEncryptedWorkflow } from '@/utils/workflowEncryption';
 
 // Invalidate the browser cache for a deleted entry's output images so a later
 // generation that reuses the same filename doesn't show the stale deleted image.
@@ -37,6 +39,7 @@ function historySignature(entries: HistoryEntry[]): string {
 export interface HistoryEntry {
   prompt_id: string;
   timestamp: number;
+  clientId?: string;
   durationSeconds?: number;
   success?: boolean;
   interrupted?: boolean;
@@ -44,6 +47,7 @@ export interface HistoryEntry {
   outputs: {
     images: HistoryOutputImage[];
   };
+  outputsByNode?: Record<string, HistoryOutputImage[]>;
   prompt: Record<string, unknown>;
   workflow?: Workflow;
   hidden?: boolean;
@@ -105,13 +109,105 @@ function rawHistorySignature(data: Record<string, { status?: { status_str?: stri
     const item = data[id];
     const status = item.status;
     const completed = status?.completed === false ? 0 : 1;
-    const outputCount = item.outputs ? Object.keys(item.outputs).length : 0;
-    parts.push(`${id}:${status?.status_str ?? ''}:${completed}:${outputCount}`);
+    const outputParts: string[] = [];
+    for (const [nodeId, rawOutput] of Object.entries(item.outputs ?? {})) {
+      const output = rawOutput && typeof rawOutput === 'object'
+        ? rawOutput as {
+            images?: Array<{ filename?: unknown; subfolder?: unknown; type?: unknown }>;
+            gifs?: Array<{ filename?: unknown; subfolder?: unknown; type?: unknown }>;
+            videos?: Array<{ filename?: unknown; subfolder?: unknown; type?: unknown }>;
+          }
+        : {};
+      const media = [
+        ...(Array.isArray(output.images) ? output.images : []),
+        ...(Array.isArray(output.gifs) ? output.gifs : []),
+        ...(Array.isArray(output.videos) ? output.videos : []),
+      ].map((file) => `${String(file.filename ?? '')}/${String(file.subfolder ?? '')}/${String(file.type ?? '')}`);
+      outputParts.push(`${nodeId}=${media.join(',')}`);
+    }
+    parts.push(`${id}:${status?.status_str ?? ''}:${completed}:${outputParts.join(';')}`);
   }
   return parts.join('|');
 }
 
 type DeferredDurationStat = { workflow: Workflow; durationMs: number };
+
+function historyOutputImageKey(image: HistoryOutputImage): string {
+  return `${image.filename}/${image.subfolder}/${image.type}`;
+}
+
+function hydrateWorkflowNodeOutputsFromHistory(
+  entry: HistoryEntry,
+  claimedNodeOutputs?: Set<string>,
+  options?: { protectedExistingOutputKeys?: Set<string> },
+): void {
+  const outputsByNode = entry.outputsByNode ?? {};
+  const nodeOutputs = Object.fromEntries(
+    Object.entries(outputsByNode).filter(([, images]) => images.length > 0),
+  );
+  if (Object.keys(nodeOutputs).length === 0) return;
+
+  const workflowState = useWorkflowStore.getState();
+  const queueState = useQueueStore.getState();
+  let sessionId: string | null =
+    workflowState.promptToSession[entry.prompt_id] ??
+    queueState.shadowQueueJobs[entry.prompt_id]?.sessionId ??
+    null;
+  if (!sessionId && entry.clientId === api.clientId) {
+    sessionId = workflowState.activeSessionId;
+  }
+  if (!sessionId) return;
+
+  useWorkflowStore.setState((state) => {
+    const filterNodeOutputs = (
+      existingOutputs: Record<string, HistoryOutputImage[]>,
+    ): Record<string, HistoryOutputImage[]> => {
+      const filtered: Record<string, HistoryOutputImage[]> = {};
+      for (const [nodeId, images] of Object.entries(nodeOutputs)) {
+        const claimKey = `${sessionId}:${nodeId}`;
+        if (claimedNodeOutputs?.has(claimKey)) continue;
+        const existing = existingOutputs[nodeId] ?? [];
+        const hasProtectedLiveOutput = existing.some((image) =>
+          options?.protectedExistingOutputKeys?.has(historyOutputImageKey(image)),
+        );
+        if (hasProtectedLiveOutput) {
+          claimedNodeOutputs?.add(claimKey);
+          continue;
+        }
+        filtered[nodeId] = images;
+        claimedNodeOutputs?.add(claimKey);
+      }
+      return filtered;
+    };
+
+    if (sessionId !== state.activeSessionId) {
+      const parked = state.parkedSessions[sessionId];
+      if (!parked) return {};
+      const nextNodeOutputs = filterNodeOutputs(parked.nodeOutputs);
+      if (Object.keys(nextNodeOutputs).length === 0) return {};
+      return {
+        parkedSessions: {
+          ...state.parkedSessions,
+          [sessionId]: {
+            ...parked,
+            nodeOutputs: {
+              ...parked.nodeOutputs,
+              ...nextNodeOutputs,
+            },
+          },
+        },
+      };
+    }
+    const nextNodeOutputs = filterNodeOutputs(state.nodeOutputs);
+    if (Object.keys(nextNodeOutputs).length === 0) return {};
+    return {
+      nodeOutputs: {
+        ...state.nodeOutputs,
+        ...nextNodeOutputs,
+      },
+    };
+  });
+}
 
 const scheduleIdle: (cb: () => void) => void =
   typeof requestIdleCallback === 'function'
@@ -204,10 +300,12 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   _runFetchHistory: async (maxItems: number) => {
     set({ isLoading: true });
     try {
+      const queueSnapshot = useQueueStore.getState();
       const queuePromptIds = new Set(
         [
-          ...useQueueStore.getState().running,
-          ...useQueueStore.getState().pending,
+          ...queueSnapshot.running,
+          ...queueSnapshot.pending,
+          ...queueSnapshot.completing,
         ].map((item) => item.prompt_id),
       );
       const data = await api.getHistory(maxItems);
@@ -263,18 +361,24 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
         return null;
       };
 
-      const entries: HistoryEntry[] = Object.entries(data).map(([prompt_id, item]) => {
+      const entries: HistoryEntry[] = await Promise.all(Object.entries(data).map(async ([prompt_id, item]) => {
         // Collect all images from all output nodes
         const images: HistoryOutputImage[] = [];
-        for (const output of Object.values(item.outputs)) {
+        const outputsByNode: Record<string, HistoryOutputImage[]> = {};
+        for (const [nodeId, output] of Object.entries(item.outputs)) {
+          const nodeImages: HistoryOutputImage[] = [];
           if (output.images) {
-            images.push(...output.images);
+            nodeImages.push(...output.images);
           }
           if (output.gifs) {
-            images.push(...output.gifs);
+            nodeImages.push(...output.gifs);
           }
           if (output.videos) {
-            images.push(...output.videos);
+            nodeImages.push(...output.videos);
+          }
+          if (nodeImages.length > 0) {
+            outputsByNode[nodeId] = nodeImages;
+            images.push(...nodeImages);
           }
         }
 
@@ -331,28 +435,50 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
             ? `Execution did not complete (${displayStatus}). Some outputs may be missing.`
             : 'Execution did not complete. Some outputs may be missing.';
         }
-        const workflow = (item.prompt?.[3] as { extra_pnginfo?: { workflow?: Workflow } } | undefined)?.extra_pnginfo?.workflow;
-        const extraData = (item.prompt?.[3] ?? {}) as Record<string, unknown>;
+        const promptTuple = Array.isArray(item.prompt) ? item.prompt : [];
+        const promptGraphValue = promptTuple[2];
+        const promptGraph =
+          promptGraphValue && typeof promptGraphValue === 'object' && !Array.isArray(promptGraphValue)
+            ? promptGraphValue as Record<string, unknown>
+            : {};
+        const extraDataValue = promptTuple[3];
+        const extraData =
+          extraDataValue && typeof extraDataValue === 'object' && !Array.isArray(extraDataValue)
+            ? extraDataValue as Record<string, unknown>
+            : {};
+        const outputsToExecute = Array.isArray(promptTuple[4])
+          ? promptTuple[4].filter((value): value is string => typeof value === 'string')
+          : undefined;
+        const embeddedWorkflow = (extraData as { extra_pnginfo?: { workflow?: unknown } } | undefined)?.extra_pnginfo?.workflow;
+        const workflow = isWorkflow(embeddedWorkflow)
+          ? embeddedWorkflow
+          : isEncryptedWorkflow(embeddedWorkflow)
+            ? await decryptWorkflowFromStorage<Workflow>(embeddedWorkflow).catch(() => undefined)
+            : undefined;
         const hidden = extraData[HIDDEN_WORKFLOW_EXTRA_DATA_KEY] === true;
+        const clientIdValue = extraData.client_id ?? extraData.clientId;
+        const clientId = typeof clientIdValue === 'string' ? clientIdValue : undefined;
+        const queueRequest = Object.keys(promptGraph).length > 0
+          ? { prompt: promptGraph, extra_data: extraData }
+          : undefined;
 
         return {
           prompt_id,
           timestamp,
+          clientId,
           durationSeconds,
           success,
           interrupted,
           errorMessage,
           outputs: { images },
-          prompt: item.prompt[2] as Record<string, unknown>,
+          outputsByNode,
+          prompt: promptGraph,
           workflow,
           hidden,
-          queueRequest: {
-            prompt: item.prompt[2] as Record<string, unknown>,
-            extra_data: extraData,
-          },
-          outputsToExecute: item.prompt[4],
+          queueRequest,
+          outputsToExecute,
         };
-      });
+      }));
 
       // Sort by timestamp, newest first
       entries.sort((a, b) => b.timestamp - a.timestamp);
@@ -367,6 +493,12 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
       }
       const queueStore = useQueueStore.getState();
       const durationUpdates: DeferredDurationStat[] = [];
+      const claimedNodeOutputs = new Set<string>();
+      const protectedExistingOutputKeys = new Set(
+        Object.values(queueStore.livePromptOutputs)
+          .flat()
+          .map(historyOutputImageKey),
+      );
       for (const entry of entries) {
         if (entry.hidden) {
           for (const output of entry.outputs.images) {
@@ -390,6 +522,9 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
               });
           }
         }
+        hydrateWorkflowNodeOutputsFromHistory(entry, claimedNodeOutputs, {
+          protectedExistingOutputKeys,
+        });
         queueStore.markPromptCompleted(entry.prompt_id);
         // Only surface a failure toast for a prompt the user is actively
         // tracking in the queue (running/pending) — never for past history items.

@@ -8,6 +8,7 @@ import { useImageViewerStore } from '@/hooks/useImageViewer';
 import { useQueueStore } from '@/hooks/useQueue';
 import { useOverallProgress } from '@/hooks/useOverallProgress';
 import { resolveExecutingNodeLabel } from '@/utils/executionLabels';
+import { selectSingleComfyProgressPromptId } from '@/utils/queueProgress';
 
 export function BottomStatusOverlay() {
   const currentPanel = useNavigationStore((s) => s.currentPanel);
@@ -30,6 +31,7 @@ export function BottomStatusOverlay() {
   const revealNodeWithParents = useWorkflowStore((s) => s.revealNodeWithParents);
   const nodeTypes = useWorkflowStore((s) => s.nodeTypes);
   const running = useQueueStore((s) => s.running);
+  const pending = useQueueStore((s) => s.pending);
   const [dismissedRunKey, setDismissedRunKey] = useState<string | null>(null);
 
   const isQueuePanel = currentPanel === 'queue';
@@ -63,12 +65,10 @@ export function BottomStatusOverlay() {
     );
   }, [workflow, executingNodeId, executingNodePath, nodeTypes]);
 
-  const comfyProgressRunning = running.filter((item) => {
-    const backend = String(item.extra?.backend || '').toLowerCase();
-    return !backend.includes('native') && !backend.includes('mlx');
-  });
-  const fallbackRunKey = comfyProgressRunning.length === 1 ? comfyProgressRunning[0].prompt_id : null;
+  const fallbackRunKey = selectSingleComfyProgressPromptId(running);
+  const fallbackPendingKey = !fallbackRunKey ? selectSingleComfyProgressPromptId(pending) : null;
   const runKey = executingPromptId || fallbackRunKey;
+  const visibleRunKey = runKey || fallbackPendingKey;
   const hasComfyProgressRun = isExecuting || Boolean(fallbackRunKey);
   const nativeOverallProgress = runKey ? nativeOverallProgressByPrompt[runKey] : undefined;
   const overallProgress = useOverallProgress({
@@ -83,9 +83,9 @@ export function BottomStatusOverlay() {
   // panel — don't surface them while browsing the queue or outputs.
   const hasErrorToast = (Boolean(error) || hasNodeErrors) && !errorsDismissed
     && (!isWorkflowLoadError || isWorkflowPanel);
-  const progressDismissed = dismissedRunKey !== null && dismissedRunKey === runKey;
+  const progressDismissed = dismissedRunKey !== null && dismissedRunKey === visibleRunKey;
   const showProgress =
-    overallProgress !== null &&
+    (overallProgress !== null || Boolean(fallbackPendingKey)) &&
     !isQueuePanel &&
     !isOutputsPanel &&
     !progressDismissed;
@@ -130,8 +130,8 @@ export function BottomStatusOverlay() {
   };
 
   const handleProgressDismiss = () => {
-    if (!runKey) return;
-    setDismissedRunKey(runKey);
+    if (!visibleRunKey) return;
+    setDismissedRunKey(visibleRunKey);
     // Dismissing the progress card is an explicit "I'm done watching this" — also
     // disengage the execution auto-follow so it stops scrolling the workflow list.
     window.dispatchEvent(
@@ -226,9 +226,11 @@ export function BottomStatusOverlay() {
           </button>
           <div className="node-progress-info flex min-w-0 items-center justify-between gap-2 text-xs leading-snug">
             <span className="executing-node-name min-w-0 truncate font-semibold text-slate-100">
-              {executingNodeLabel || "Running"}
+              {executingNodeLabel || (fallbackPendingKey ? "Queued" : "Running")}
             </span>
-            <span className="shrink-0 font-semibold text-emerald-200">{displayNodeProgress}%</span>
+            <span className="shrink-0 font-semibold text-emerald-200">
+              {fallbackPendingKey ? "Starting" : `${displayNodeProgress}%`}
+            </span>
           </div>
           <div className="node-progress-track mt-1 h-1 rounded-full bg-slate-800/75 overflow-hidden">
             <div

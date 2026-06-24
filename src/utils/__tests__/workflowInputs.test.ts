@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
+  applyBypassedRegionalPromptFallbacks,
   buildWorkflowPromptInputs,
   getWidgetValue,
   getWorkflowWidgetIndexMap,
@@ -620,6 +621,296 @@ describe('resolveSource', () => {
   });
 });
 
+describe('applyBypassedRegionalPromptFallbacks', () => {
+  it('synthesizes missing sampler conditioning when a Forge Couple regional prompt is bypassed', () => {
+    const nodeTypes = {
+      UNETLoader: {
+        input: { required: {} },
+        output: ['MODEL'],
+        name: 'UNETLoader',
+        display_name: 'UNETLoader',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      LoadQwen35AnimaCLIP: {
+        input: { required: {} },
+        output: ['CLIP'],
+        name: 'LoadQwen35AnimaCLIP',
+        display_name: 'LoadQwen35AnimaCLIP',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      ForgeCoupleRegionalPrompt: {
+        input: {
+          required: {
+            model: ['MODEL', {}],
+            clip: ['CLIP', {}],
+            positive_text: ['STRING', {}],
+          },
+        },
+        input_order: { required: ['model', 'clip', 'positive_text'] },
+        output: ['MODEL', 'CONDITIONING', 'STRING'],
+        name: 'ForgeCoupleRegionalPrompt',
+        display_name: 'Forge Couple Regional Prompt',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      CLIPTextEncode: {
+        input: {
+          required: {
+            text: ['STRING', {}],
+            clip: ['CLIP', {}],
+          },
+        },
+        input_order: { required: ['text', 'clip'] },
+        output: ['CONDITIONING'],
+        name: 'CLIPTextEncode',
+        display_name: 'CLIP Text Encode',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      KSampler: {
+        input: {
+          required: {
+            model: ['MODEL', {}],
+            positive: ['CONDITIONING', {}],
+            negative: ['CONDITIONING', {}],
+          },
+        },
+        output: ['LATENT'],
+        name: 'KSampler',
+        display_name: 'KSampler',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    } as NodeTypes;
+    const workflow: Workflow = {
+      last_node_id: 7,
+      last_link_id: 5,
+      nodes: [
+        makeNode(1, 'UNETLoader', {
+          outputs: [{ name: 'MODEL', type: 'MODEL', links: [1] }],
+        }),
+        makeNode(2, 'LoadQwen35AnimaCLIP', {
+          outputs: [{ name: 'CLIP', type: 'CLIP', links: [2, 5] }],
+        }),
+        makeNode(4, 'ForgeCoupleRegionalPrompt', {
+          mode: 4,
+          inputs: [
+            { name: 'model', type: 'MODEL', link: 1 },
+            { name: 'clip', type: 'CLIP', link: 2 },
+          ],
+          outputs: [
+            { name: 'model', type: 'MODEL', links: [3] },
+            { name: 'positive', type: 'CONDITIONING', links: [4] },
+          ],
+          widgets_values: ['solo portrait'],
+        }),
+        makeNode(5, 'CLIPTextEncode', {
+          inputs: [
+            { name: 'clip', type: 'CLIP', link: 5 },
+          ],
+          outputs: [
+            { name: 'CONDITIONING', type: 'CONDITIONING', links: [6] },
+          ],
+          widgets_values: ['low quality'],
+        }),
+        makeNode(7, 'KSampler', {
+          inputs: [
+            { name: 'model', type: 'MODEL', link: 3 },
+            { name: 'positive', type: 'CONDITIONING', link: 4 },
+            { name: 'negative', type: 'CONDITIONING', link: 6 },
+          ],
+        }),
+      ],
+      links: [
+        [1, 1, 0, 4, 0, 'MODEL'],
+        [2, 2, 0, 4, 1, 'CLIP'],
+        [3, 4, 0, 7, 0, 'MODEL'],
+        [4, 4, 1, 7, 1, 'CONDITIONING'],
+        [5, 2, 0, 5, 0, 'CLIP'],
+        [6, 5, 0, 7, 2, 'CONDITIONING'],
+      ],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const prompt = {
+      '1': { class_type: 'UNETLoader', inputs: {} },
+      '2': { class_type: 'LoadQwen35AnimaCLIP', inputs: {} },
+      '7': { class_type: 'KSampler', inputs: { model: ['1', 0] } },
+    } as Record<string, unknown>;
+
+    applyBypassedRegionalPromptFallbacks(
+      workflow,
+      nodeTypes,
+      prompt,
+      new Set([1, 2, 7]),
+    );
+
+    expect(prompt.__mobile_fallback_positive_4).toEqual({
+      class_type: 'CLIPTextEncode',
+      inputs: {
+        clip: ['2', 0],
+        text: 'solo portrait',
+      },
+    });
+    expect((prompt['7'] as { inputs: Record<string, unknown> }).inputs.positive)
+      .toEqual(['__mobile_fallback_positive_4', 0]);
+    expect(prompt['5']).toEqual({
+      class_type: 'CLIPTextEncode',
+      inputs: {
+        clip: ['2', 0],
+        text: 'low quality',
+      },
+    });
+    expect((prompt['7'] as { inputs: Record<string, unknown> }).inputs.negative)
+      .toEqual(['5', 0]);
+  });
+
+  it('collapses structured bbox prompt JSON when synthesizing a bypass fallback', () => {
+    const nodeTypes = {
+      UNETLoader: {
+        input: { required: {} },
+        output: ['MODEL'],
+        name: 'UNETLoader',
+        display_name: 'UNETLoader',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      LoadQwen35AnimaCLIP: {
+        input: { required: {} },
+        output: ['CLIP'],
+        name: 'LoadQwen35AnimaCLIP',
+        display_name: 'LoadQwen35AnimaCLIP',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      ForgeCoupleRegionalPrompt: {
+        input: {
+          required: {
+            model: ['MODEL', {}],
+            clip: ['CLIP', {}],
+            positive_text: ['STRING', {}],
+          },
+        },
+        input_order: { required: ['model', 'clip', 'positive_text'] },
+        output: ['MODEL', 'CONDITIONING', 'STRING'],
+        name: 'ForgeCoupleRegionalPrompt',
+        display_name: 'Forge Couple Regional Prompt',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      CLIPTextEncode: {
+        input: {
+          required: {
+            text: ['STRING', {}],
+            clip: ['CLIP', {}],
+          },
+        },
+        input_order: { required: ['text', 'clip'] },
+        output: ['CONDITIONING'],
+        name: 'CLIPTextEncode',
+        display_name: 'CLIP Text Encode',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+      KSampler: {
+        input: {
+          required: {
+            model: ['MODEL', {}],
+            positive: ['CONDITIONING', {}],
+          },
+        },
+        output: ['LATENT'],
+        name: 'KSampler',
+        display_name: 'KSampler',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    } as NodeTypes;
+    const structuredPrompt = JSON.stringify({
+      high_level_description: 'two adult women in a neon cafe',
+      compositional_deconstruction: {
+        background: 'indoors',
+        elements: [
+          { type: 'obj', bbox: [80, 120, 480, 920], desc: 'adult woman with silver hair' },
+          { type: 'obj', bbox: [520, 130, 930, 920], desc: 'adult woman with red hair' },
+        ],
+      },
+    });
+    const workflow: Workflow = {
+      last_node_id: 7,
+      last_link_id: 4,
+      nodes: [
+        makeNode(1, 'UNETLoader', {
+          outputs: [{ name: 'MODEL', type: 'MODEL', links: [1] }],
+        }),
+        makeNode(2, 'LoadQwen35AnimaCLIP', {
+          outputs: [{ name: 'CLIP', type: 'CLIP', links: [2] }],
+        }),
+        makeNode(4, 'ForgeCoupleRegionalPrompt', {
+          mode: 4,
+          inputs: [
+            { name: 'model', type: 'MODEL', link: 1 },
+            { name: 'clip', type: 'CLIP', link: 2 },
+          ],
+          outputs: [
+            { name: 'model', type: 'MODEL', links: [3] },
+            { name: 'positive', type: 'CONDITIONING', links: [4] },
+          ],
+          widgets_values: [structuredPrompt],
+        }),
+        makeNode(7, 'KSampler', {
+          inputs: [
+            { name: 'model', type: 'MODEL', link: 3 },
+            { name: 'positive', type: 'CONDITIONING', link: 4 },
+          ],
+        }),
+      ],
+      links: [
+        [1, 1, 0, 4, 0, 'MODEL'],
+        [2, 2, 0, 4, 1, 'CLIP'],
+        [3, 4, 0, 7, 0, 'MODEL'],
+        [4, 4, 1, 7, 1, 'CONDITIONING'],
+      ],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+    const prompt = {
+      '1': { class_type: 'UNETLoader', inputs: {} },
+      '2': { class_type: 'LoadQwen35AnimaCLIP', inputs: {} },
+      '7': { class_type: 'KSampler', inputs: { model: ['1', 0] } },
+    } as Record<string, unknown>;
+
+    applyBypassedRegionalPromptFallbacks(
+      workflow,
+      nodeTypes,
+      prompt,
+      new Set([1, 2, 7]),
+    );
+
+    expect(prompt.__mobile_fallback_positive_4).toEqual({
+      class_type: 'CLIPTextEncode',
+      inputs: {
+        clip: ['2', 0],
+        text: 'two adult women in a neon cafe, indoors, adult woman with silver hair, adult woman with red hair',
+      },
+    });
+  });
+});
+
 describe('seed override application in buildWorkflowPromptInputs', () => {
   it("replaces a 'seed' INT widget value with the override (stock KSampler)", () => {
     const node = makeNode(1, 'KSampler', {
@@ -1179,4 +1470,139 @@ describe('filename_prefix replacements', () => {
     expect(inputs.filename_prefix).toBe('video/2026-02-21/140509_768?bad');
   });
 
+});
+
+describe('PromptAssistantGenerate queue serialization', () => {
+  const nodeTypes: NodeTypes = {
+    PromptAssistantGenerate: {
+      input: {
+        required: {
+          idea: ['STRING', { default: '' }],
+          profile: [['swarm_booru_tags', 'swarm_wai_trio_three_lines'], { default: 'swarm_booru_tags' }],
+          context: ['STRING', { default: '' }],
+          image_caption: ['STRING', { default: '' }],
+          extra_instructions: ['STRING', { default: '' }],
+          timeout_seconds: ['FLOAT', { default: 60 }],
+          seed: ['INT', { default: -1 }],
+        },
+        optional: {
+          profile_json_override: ['STRING', { default: '' }],
+          prompt: ['STRING', { default: '' }],
+          negative_prompt: ['STRING', { default: '' }],
+          helper_mode: [['Regional prompt', 'Bounding boxes'], { default: 'Regional prompt' }],
+          emit_ui_text: ['BOOLEAN', { default: false }],
+          auto_generate_on_queue: ['BOOLEAN', { default: false }],
+        },
+      },
+      input_order: {
+        required: ['idea', 'profile', 'context', 'image_caption', 'extra_instructions', 'timeout_seconds', 'seed'],
+        optional: ['profile_json_override', 'prompt', 'negative_prompt', 'helper_mode', 'emit_ui_text', 'auto_generate_on_queue'],
+      },
+      output: [],
+      output_name: [],
+      name: 'PromptAssistantGenerate',
+      display_name: 'Prompt Assistant Generate',
+      description: '',
+      python_module: '',
+      category: '',
+    },
+  };
+
+  it('queues only the editable final prompt fields and disables stale auto-generation inputs', () => {
+    const node = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea: two adult women and one adult man',
+        'swarm_wai_trio_three_lines',
+        'poisoned context',
+        'poisoned image caption',
+        'poisoned extra instructions',
+        90,
+        4321,
+        '',
+        '1girl, adult woman\n1boy, adult man',
+        'bad anatomy',
+        'Regional prompt',
+        true,
+        true,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      node,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.idea).toBe('');
+    expect(inputs.prompt).toBe('1girl, adult woman\n1boy, adult man');
+    expect(inputs.negative_prompt).toBe('bad anatomy');
+    expect(inputs.context).toBe('');
+    expect(inputs.image_caption).toBe('');
+    expect(inputs.extra_instructions).toBe('');
+    expect(inputs.emit_ui_text).toBe(true);
+    expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+
+  it('recovers a structured final prompt that was accidentally stored in final negative', () => {
+    const structuredPrompt = JSON.stringify({
+      high_level_description: 'two adult women in a neon cafe',
+      compositional_deconstruction: {
+        background: 'indoors',
+        elements: [
+          { type: 'obj', bbox: [100, 100, 400, 900], desc: 'adult woman in a red jacket' },
+        ],
+      },
+    });
+    const node = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea',
+        'swarm_booru_tags',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        '',
+        '',
+        structuredPrompt,
+        'Bounding boxes',
+        false,
+        true,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      node,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.prompt).toBe(structuredPrompt);
+    expect(inputs.negative_prompt).toBe('');
+    expect(inputs.auto_generate_on_queue).toBe(false);
+  });
 });

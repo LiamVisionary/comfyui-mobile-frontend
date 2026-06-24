@@ -9,10 +9,20 @@ import {
 } from '../../InputControls/controlStyles';
 import type { WorkflowNode } from '@/api/types';
 import {
+  generatePromptAssistantPrompt,
+  type PromptAssistantGenerateRequest,
+  type PromptAssistantGenerateResponse,
+} from '@/api/client';
+import {
   generateSeedFromNode,
   getSpecialSeedMode,
   useWorkflowStore
 } from '@/hooks/useWorkflow';
+import { ReloadIcon } from '@/components/icons';
+import {
+  resolveNodeByHierarchicalKey,
+  resolveScopeForHierarchicalKey,
+} from '@/utils/canonicalWorkflowOps';
 import { RGTHREE_SEED_NODE_TYPE, hasSeedControlWidget } from '@/utils/seedUtils';
 import { useLoraManagerStore } from '@/hooks/useLoraManager';
 import { useSeedStore } from '@/hooks/useSeed';
@@ -49,6 +59,8 @@ interface WidgetDescriptor {
 interface RenderWidgetDescriptor extends WidgetDescriptor {
   source: 'input' | 'widget';
 }
+
+const PROMPT_ASSISTANT_DRAFT_SETTLE_MS = 360;
 
 interface NodeCardParametersProps {
   node: WorkflowNode;
@@ -101,9 +113,14 @@ export function NodeCardParameters({
   const isFastGroupsBypasser = /fast\s+groups/i.test(node.type) && /\(rgthree\)/i.test(node.type);
   const isRgthreeSeedNode = node.type === RGTHREE_SEED_NODE_TYPE;
   const isCrLoraStackNode = /cr\s*lora\s*stack/i.test(node.type);
+  const isPromptAssistantNode = node.type === 'PromptAssistantGenerate';
   // Per-lora fold state for CR-LoRA-Stack-style nodes, keyed by lora group index.
   // Default (absent / false) is unfolded so all controls show until collapsed.
   const [foldedLoras, setFoldedLoras] = useState<Record<number, boolean>>({});
+  const [promptAssistantLoading, setPromptAssistantLoading] = useState(false);
+  const [promptAssistantResult, setPromptAssistantResult] =
+    useState<PromptAssistantGenerateResponse | null>(null);
+  const [promptAssistantError, setPromptAssistantError] = useState<string | null>(null);
   const toggleLoraFold = (index: number) =>
     setFoldedLoras((prev) => ({ ...prev, [index]: !prev[index] }));
   const isLoraManagerNode = isLoraManagerNodeType(node.type);
@@ -123,6 +140,40 @@ export function NodeCardParameters({
   const widgetsToRender = hideSeedInputWidget
     ? visibleWidgets.filter((widget) => widget.name !== 'seed' && widget.name !== 'noise_seed')
     : visibleWidgets;
+  const promptAssistantFinalWidgetNames = useMemo(
+    () => new Set(['prompt', 'negative_prompt']),
+    []
+  );
+  const promptAssistantHiddenWidgetNames = useMemo(
+    () => new Set(['context', 'image_caption', 'extra_instructions', 'emit_ui_text', 'auto_generate_on_queue']),
+    []
+  );
+  const promptAssistantFinalWidgets = useMemo(() => {
+    if (!isPromptAssistantNode) return [];
+    const byName = new Map<string, WidgetDescriptor>();
+    for (const widget of [...inputWidgetsToRender, ...widgetsToRender]) {
+      if (promptAssistantFinalWidgetNames.has(widget.name) && !byName.has(widget.name)) {
+        byName.set(widget.name, widget);
+      }
+    }
+    return ['prompt', 'negative_prompt']
+      .map((name) => byName.get(name))
+      .filter((widget): widget is WidgetDescriptor => Boolean(widget));
+  }, [inputWidgetsToRender, isPromptAssistantNode, promptAssistantFinalWidgetNames, widgetsToRender]);
+  const promptAssistantPromptWidget = promptAssistantFinalWidgets.find((widget) => widget.name === 'prompt') ?? null;
+  const promptAssistantNegativeWidget = promptAssistantFinalWidgets.find((widget) => widget.name === 'negative_prompt') ?? null;
+  const displayedInputWidgets = isPromptAssistantNode
+    ? inputWidgetsToRender.filter((widget) =>
+        !promptAssistantFinalWidgetNames.has(widget.name) &&
+        !promptAssistantHiddenWidgetNames.has(widget.name)
+      )
+    : inputWidgetsToRender;
+  const displayedWidgets = isPromptAssistantNode
+    ? widgetsToRender.filter((widget) =>
+        !promptAssistantFinalWidgetNames.has(widget.name) &&
+        !promptAssistantHiddenWidgetNames.has(widget.name)
+      )
+    : widgetsToRender;
   const showParameters = visibleWidgets.length > 0 || visibleInputWidgets.length > 0;
   const inSubgraphScope = scopeStack[scopeStack.length - 1]?.type === 'subgraph';
   const promotedWidgetNames = useMemo(() => {
@@ -542,10 +593,77 @@ export function NodeCardParameters({
 
   const crStackWidgets = useMemo<RenderWidgetDescriptor[]>(() => (
     [
-      ...inputWidgetsToRender.map((widget) => ({ ...widget, source: 'input' as const })),
-      ...widgetsToRender.map((widget) => ({ ...widget, source: 'widget' as const }))
+      ...displayedInputWidgets.map((widget) => ({ ...widget, source: 'input' as const })),
+      ...displayedWidgets.map((widget) => ({ ...widget, source: 'widget' as const }))
     ]
-  ), [inputWidgetsToRender, widgetsToRender]);
+  ), [displayedInputWidgets, displayedWidgets]);
+
+  const readPromptAssistantRequest = (): PromptAssistantGenerateRequest => {
+    let currentNode = node;
+    const currentWorkflow = useWorkflowStore.getState().workflow;
+    if (currentWorkflow && node.itemKey) {
+      const scope = resolveScopeForHierarchicalKey(currentWorkflow, node.itemKey);
+      currentNode = resolveNodeByHierarchicalKey(scope.nodes, node.itemKey) ?? node;
+    }
+
+    const valueFor = (widget: WidgetDescriptor): unknown => {
+      const values = currentNode.widgets_values;
+      if (Array.isArray(values)) {
+        return values[widget.widgetIndex] ?? widget.value;
+      }
+      if (values && typeof values === 'object') {
+        const record = values as Record<string, unknown>;
+        return record[widget.name] ?? record[String(widget.widgetIndex)] ?? widget.value;
+      }
+      return widget.value;
+    };
+
+    const byName = new Map<string, unknown>();
+    for (const widget of [...inputWidgetsToRender, ...widgetsToRender]) {
+      byName.set(widget.name, valueFor(widget));
+    }
+
+    const asString = (name: string, fallback = ''): string => {
+      const value = byName.get(name);
+      return value == null ? fallback : String(value);
+    };
+    const asNumber = (name: string, fallback: number): number => {
+      const value = Number(byName.get(name));
+      return Number.isFinite(value) ? value : fallback;
+    };
+
+    return {
+      idea: asString('idea'),
+      profile: asString('profile', 'swarm_booru_tags') || 'swarm_booru_tags',
+      timeout_seconds: asNumber('timeout_seconds', 60),
+      seed: Math.trunc(asNumber('seed', -1)),
+      profile_json_override: asString('profile_json_override'),
+      helper_mode: asString('helper_mode', 'Regional prompt') || 'Regional prompt',
+      negative_prompt: asString('negative_prompt'),
+    };
+  };
+
+  const handlePromptAssistantGenerate = async () => {
+    if (promptAssistantLoading) return;
+    setPromptAssistantLoading(true);
+    setPromptAssistantError(null);
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, PROMPT_ASSISTANT_DRAFT_SETTLE_MS));
+      const request = readPromptAssistantRequest();
+      const result = await generatePromptAssistantPrompt(request);
+      if (promptAssistantPromptWidget) {
+        onUpdateNodeWidget(promptAssistantPromptWidget.widgetIndex, result.prompt, 'prompt');
+      }
+      if (promptAssistantNegativeWidget && result.negative_prompt.trim()) {
+        onUpdateNodeWidget(promptAssistantNegativeWidget.widgetIndex, result.negative_prompt, 'negative_prompt');
+      }
+      setPromptAssistantResult(result);
+    } catch (error) {
+      setPromptAssistantError(error instanceof Error ? error.message : 'Prompt generation failed');
+    } finally {
+      setPromptAssistantLoading(false);
+    }
+  };
 
   const crStackGroupedWidgets = useMemo(() => {
     const grouped = new Map<number, RenderWidgetDescriptor[]>();
@@ -839,7 +957,7 @@ export function NodeCardParameters({
             </>
           ) : (
             <>
-              {inputWidgetsToRender.map((inputWidget) => (
+              {displayedInputWidgets.map((inputWidget) => (
                 <div key={getWidgetKey(inputWidget, 'input-widget')} className={isBypassed ? 'opacity-80' : ''}>
                   <WidgetControl
                     name={inputWidget.name}
@@ -855,7 +973,7 @@ export function NodeCardParameters({
                   />
                 </div>
               ))}
-              {widgetsToRender.map((widget) => (
+              {displayedWidgets.map((widget) => (
                 <div key={getWidgetKey(widget, 'widget')} className={isBypassed ? 'opacity-80' : ''}>
                   <WidgetControl
                     name={widget.name}
@@ -872,6 +990,50 @@ export function NodeCardParameters({
                 </div>
               ))}
             </>
+          )}
+          {isPromptAssistantNode && (
+            <div className={`mt-3 p-3 ${controlNestedSurfaceClassName}`}>
+              <button
+                type="button"
+                className="w-full py-2 px-3 rounded-lg text-sm font-semibold bg-cyan-500 text-slate-950 enabled:hover:bg-cyan-400 transition disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                onClick={handlePromptAssistantGenerate}
+                disabled={isBypassed || promptAssistantLoading}
+              >
+                <ReloadIcon
+                  className={`w-4 h-4 ${promptAssistantLoading ? 'animate-spin' : ''}`}
+                />
+                <span>{promptAssistantLoading ? 'Generating prompt' : 'Generate prompt'}</span>
+              </button>
+              {promptAssistantError && (
+                <div className="mt-2 text-xs text-red-300 break-words">
+                  {promptAssistantError}
+                </div>
+              )}
+              {promptAssistantResult && !promptAssistantError && (
+                <div className="mt-2 text-xs text-cyan-200 break-words">
+                  {promptAssistantPromptWidget ? 'Prompt updated' : 'Generated prompt ready'}
+                </div>
+              )}
+              {promptAssistantFinalWidgets.length > 0 && (
+                <div className="mt-3 space-y-3">
+                  {promptAssistantFinalWidgets.map((widget) => (
+                    <WidgetControl
+                      key={getWidgetKey(widget, 'prompt-assistant-final-widget')}
+                      name={widget.name === 'prompt' ? 'Final prompt' : 'Final negative'}
+                      type={widget.type}
+                      value={widget.value}
+                      options={widget.options}
+                      onChange={(newValue) => onUpdateNodeWidget(widget.widgetIndex, newValue, widget.name)}
+                      disabled={isBypassed}
+                      isPinned={canPinWidget(widget.type, widget.name) ? isWidgetPinned(widget.widgetIndex) : false}
+                      onTogglePin={canPinWidget(widget.type, widget.name) ? () => toggleWidgetPin(widget.widgetIndex, widget.name, widget.type, widget.options) : undefined}
+                      hasError={errorInputNames.has(widget.name)}
+                      isPromoted={isPromotedWidget(widget.name)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           {node.type === 'PrimitiveNode' && (() => {
             const outputType = node.outputs?.[0]?.type;

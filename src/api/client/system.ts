@@ -1,3 +1,5 @@
+import { comfyRoute } from './base';
+
 export async function restartServer(): Promise<void> {
   const response = await fetch(`/mobile/api/restart`, {
     method: 'POST',
@@ -36,7 +38,7 @@ export interface SystemStats {
 }
 
 export async function fetchSystemStats(): Promise<SystemStats> {
-  const response = await fetch(`/system_stats`, { cache: 'no-store' });
+  const response = await fetch(comfyRoute('/system_stats'), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Failed to fetch system stats');
   }

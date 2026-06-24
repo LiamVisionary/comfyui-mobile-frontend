@@ -1,7 +1,7 @@
 import type { QueueWorkflowDiff } from '@/utils/workflowDiff';
 import type { QueueItem, ShadowQueueJob } from '../useQueue';
 
-// Bound the persisted diff map so it can't grow without limit. Prompt ids are
+// Bound the in-memory diff map so it can't grow without limit. Prompt ids are
 // UUIDs (non-integer keys), so Object.keys preserves insertion order.
 const WORKFLOW_DIFF_CAP = 300;
 

@@ -2,6 +2,7 @@ import { getFileWorkflow, type AssetSource, type FileItem } from '@/api/client';
 import type { NodeTypes, Workflow, WorkflowNode } from '@/api/types';
 import { getWidgetIndexForInput } from '@/hooks/useWorkflow';
 import type { WorkflowSource } from '@/hooks/useWorkflow';
+import { isWorkflow } from '@/utils/imageWorkflowMetadata';
 import { resolveWorkflowNodeDisplayName } from '@/utils/subgraphPlaceholderLabels';
 import type { ViewerImage } from '@/utils/viewerImages';
 
@@ -31,7 +32,9 @@ export function resolveViewerItemWorkflowLoad(
     item.file && historyWorkflowByFileId
       ? historyWorkflowByFileId.get(item.file.id)
       : null;
-  const workflowToLoad = item.workflow ?? historyMatch?.workflow;
+  const historyWorkflow = isWorkflow(historyMatch?.workflow) ? historyMatch.workflow : undefined;
+  const itemWorkflow = isWorkflow(item.workflow) ? item.workflow : undefined;
+  const workflowToLoad = itemWorkflow ?? historyWorkflow;
   const promptId = item.promptId ?? historyMatch?.promptId;
   if (!workflowToLoad) return null;
   let source: WorkflowSource;

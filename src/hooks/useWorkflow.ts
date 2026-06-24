@@ -29,6 +29,7 @@ import {
   restoreWorkflowFilePrefixes,
 } from "@/utils/inputPathAliases";
 import {
+  applyBypassedRegionalPromptFallbacks,
   buildWorkflowPromptInputs,
   getNodeWidgetIndexMap,
   getWidgetValue,
@@ -147,6 +148,7 @@ import {
   HIDDEN_WORKFLOW_EXTRA_DATA_KEY,
   isWorkflowHidden,
 } from "@/utils/workflowHidden";
+import { encryptWorkflowForStorage } from "@/utils/workflowEncryption";
 
 // ScopeFrame is defined in canonicalWorkflowOps.ts and re-exported here.
 export type { ScopeFrame };
@@ -416,15 +418,15 @@ function clearedWorkflowContent(): Partial<WorkflowState> {
   };
 }
 
-// Drop each parked snapshot's `latentPreviews` before persisting: they are
-// transient blob: object URLs that are invalid (and would render broken) after
-// a page reload. Node outputs (file references) are kept and re-render fine.
-function stripLatentPreviewsFromSnapshots(
+// Drop transient/private previews before persisting. `latentPreviews` are
+// blob: URLs that break after reload; `nodeTextOutputs` may contain generated
+// prompt text and should remain live-session only.
+function stripTransientPreviewsFromSnapshots(
   parkedSessions: Record<string, WorkflowSessionSnapshot>,
 ): Record<string, WorkflowSessionSnapshot> {
   const result: Record<string, WorkflowSessionSnapshot> = {};
   for (const [id, snapshot] of Object.entries(parkedSessions)) {
-    result[id] = { ...snapshot, latentPreviews: {} };
+    result[id] = { ...snapshot, latentPreviews: {}, nodeTextOutputs: {} };
   }
   return result;
 }
@@ -888,7 +890,8 @@ function updateNodeWidgetValues(
 
   let newWidgetValues = [...node.widgets_values];
   if (widgetIndex >= newWidgetValues.length) {
-    newWidgetValues.push(value);
+    newWidgetValues.length = widgetIndex + 1;
+    newWidgetValues[widgetIndex] = value;
   } else {
     newWidgetValues[widgetIndex] = value;
   }
@@ -5347,6 +5350,14 @@ export const useWorkflowStore = create<WorkflowState>()(
               const promptKey = promptKeyMap.get(node.id) ?? String(node.id);
               prompt[promptKey] = { class_type: classType, inputs };
             }
+            applyBypassedRegionalPromptFallbacks(
+              expandedForQueue,
+              nodeTypes,
+              prompt,
+              allowedNodeIds,
+              promptKeyMap,
+              expandedSeedOverrides,
+            );
 
             // Infinite-loop safety: if an infinite re-enqueue would submit the
             // exact same prompt as last time (e.g. a fixed seed), the loop would
@@ -5381,79 +5392,62 @@ export const useWorkflowStore = create<WorkflowState>()(
             const metadataWorkflowLabel = queueWorkflowLabel(metadataFilename, metadataSource);
             const hiddenWorkflow = isWorkflowHidden(metadataSource, metadataFilename);
             const previewMethod = useGenerationSettingsStore.getState().previewMethod;
+            const encryptedQueuedWorkflow = await encryptWorkflowForStorage(queuedWorkflow);
             const promptRequest: api.PromptQueueRequest = {
               prompt: queuedPrompt,
               client_id: api.clientId,
               extra_data: {
                 extra_pnginfo: {
-                  workflow: queuedWorkflow,
+                  workflow: encryptedQueuedWorkflow,
                 },
                 ...(hiddenWorkflow ? { [HIDDEN_WORKFLOW_EXTRA_DATA_KEY]: true } : {}),
                 ...(previewMethod !== 'none' ? { preview_method: previewMethod } : {}),
               },
             };
-            const response = await fetch('/api/prompt', {
+            const response = await fetch(api.comfyRoute('/api/prompt'), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(promptRequest),
             });
+            const responseData = await response.json().catch(() => null) as (api.PromptQueueResponse & {
+              error?: unknown;
+              message?: unknown;
+              details?: unknown;
+            }) | null;
+            const responseNodeErrors = api.extractPromptNodeErrors(responseData);
+            const responseNodeErrorCount = api.countPromptNodeErrors(responseNodeErrors);
 
             if (!response.ok) {
-              const errorData = await response.json();
-              const getErrorMessage = (value: unknown): string | null => {
-                if (typeof value === 'string') return value;
-                if (value && typeof value === 'object') {
-                  const details = value as { message?: unknown; error?: unknown; details?: unknown };
-                  if (typeof details.message === 'string') return details.message;
-                  if (typeof details.error === 'string') return details.error;
-                  if (typeof details.details === 'string') return details.details;
-                }
-                return null;
-              };
-
-              // Parse node-specific errors if present
-              const nodeErrors: Record<string, NodeError[]> = {};
-              if (errorData.node_errors) {
-                for (const [nodeId, nodeError] of Object.entries(
-                  errorData.node_errors,
-                )) {
-                  const errorsArray = Array.isArray(nodeError)
-                    ? nodeError
-                    : (typeof nodeError === "object" &&
-                        nodeError !== null &&
-                        "errors" in nodeError &&
-                        Array.isArray((nodeError as { errors?: unknown[] }).errors))
-                    ? (nodeError as { errors: Array<{
-                        type: string;
-                        message: string;
-                        details: string;
-                        extra_info?: { input_name?: string };
-                      }> }).errors
-                    : [];
-                  if (errorsArray && errorsArray.length > 0) {
-                    nodeErrors[nodeId] = errorsArray.map((e) => ({
-                      type: e.type,
-                      message: e.message,
-                      details: e.details,
-                      inputName: e.extra_info?.input_name,
-                    }));
-                  }
-                }
-              }
-
-              if (Object.keys(nodeErrors).length > 0) {
-                applyNodeErrors(nodeErrors);
+              if (responseNodeErrorCount > 0) {
+                applyNodeErrors(responseNodeErrors);
               }
 
               throw new Error(
-                getErrorMessage(errorData.error) || "Failed to queue prompt",
+                api.getPromptResponseErrorMessage(responseData?.error ?? responseData?.message ?? responseData?.details)
+                  ?? (responseNodeErrorCount > 0 ? api.formatPromptNodeErrorsMessage(responseNodeErrors) : null)
+                  ?? "Failed to queue prompt",
+              );
+            }
+
+            if (responseNodeErrorCount > 0) {
+              applyNodeErrors(responseNodeErrors);
+              throw new Error(
+                api.getPromptResponseErrorMessage(responseData?.error ?? responseData?.message ?? responseData?.details)
+                  ?? api.formatPromptNodeErrorsMessage(responseNodeErrors),
               );
             }
 
             // Record which session owns this prompt_id for websocket routing.
             try {
-              const okData = (await response.json()) as { prompt_id?: string; native_mlx?: boolean };
+              const okData = responseData as { prompt_id?: string; native_mlx?: boolean; backend?: string } | null;
               const promptId = okData?.prompt_id;
+              const nativeBackend = typeof okData?.backend === 'string' ? okData.backend.toLowerCase() : '';
+              const wrapperPromptRoute = api.comfyRoute('/api/prompt') !== '/api/prompt';
+              const shouldUseNativeMlxHandoff = Boolean(
+                okData?.native_mlx ||
+                nativeBackend.includes('mlx') ||
+                (wrapperPromptRoute && api.detectNativeMlxBigLoveKlein3(queuedPrompt)),
+              );
               if (promptId && sid) {
                 // Prompts still in the backend queue must keep their routing
                 // entry even if the map is over the cap (a long/infinite run can
@@ -5482,7 +5476,7 @@ export const useWorkflowStore = create<WorkflowState>()(
               }
               if (promptId) {
                 useQueueStore.getState().registerLocalPrompt(promptId);
-                if (okData.native_mlx) {
+                if (shouldUseNativeMlxHandoff) {
                   queuedNativeMlx = true;
                   const nativeOutputNodeIds = Object.entries(queuedPrompt)
                     .filter(([, value]) => {
@@ -5499,7 +5493,6 @@ export const useWorkflowStore = create<WorkflowState>()(
                 useQueueStore.getState().recordQueuedPrompt(promptId, promptRequest, {
                   sessionId: sid,
                 });
-                let workflowDiffForMetadata: ReturnType<typeof computeQueueWorkflowDiff> | undefined;
                 // Compute & store this queue item's workflow diff (prompt
                 // preview) against the session's rolling base, then advance the
                 // base for next time. See selectDiffBase for the "same diff
@@ -5529,7 +5522,6 @@ export const useWorkflowStore = create<WorkflowState>()(
                     nodeTypes,
                   );
                   const diff = computeQueueWorkflowDiff(base, currentWorkflow);
-                  workflowDiffForMetadata = diff;
                   useQueueStore.getState().recordWorkflowDiff(promptId, diff);
                   const enqueuedSnapshot = structuredClone(currentWorkflow);
                   if (diffUseFlat) {
@@ -5558,7 +5550,6 @@ export const useWorkflowStore = create<WorkflowState>()(
                   workflowSource: metadataSource ?? undefined,
                   sessionId: sid ?? undefined,
                   clientId: api.clientId,
-                  workflowDiff: workflowDiffForMetadata,
                 }).catch((metadataErr) => {
                   console.warn("Failed to save mobile queue metadata:", metadataErr);
                 });
@@ -5790,11 +5781,10 @@ export const useWorkflowStore = create<WorkflowState>()(
         // transient blob: URLs (dead after refresh), so they are NOT persisted.
         nodeOutputs: state.nodeOutputs,
         nodeComparerOutputs: state.nodeComparerOutputs,
-        nodeTextOutputs: state.nodeTextOutputs,
         // Session registry
         sessions: state.sessions,
         activeSessionId: state.activeSessionId,
-        parkedSessions: stripLatentPreviewsFromSnapshots(state.parkedSessions),
+        parkedSessions: stripTransientPreviewsFromSnapshots(state.parkedSessions),
         infiniteLoopSessionId: state.infiniteLoopSessionId,
         // Persisted with the loop owner: a loop armed via the toggle but never
         // explicitly Run must stay awaiting across a reload, or the idle-resume
@@ -5804,6 +5794,7 @@ export const useWorkflowStore = create<WorkflowState>()(
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
+        state.nodeTextOutputs = {};
 
         try {
           // Migrate a legacy single-workflow payload (no `sessions`) into one
@@ -5834,7 +5825,7 @@ export const useWorkflowStore = create<WorkflowState>()(
           );
           const nextParked: Record<string, WorkflowSessionSnapshot> = {};
           for (const [pid, snap] of Object.entries(state.parkedSessions)) {
-            const copy = { ...snap };
+            const copy = { ...snap, nodeTextOutputs: {} };
             savedStates = normalizeSessionInPlace(
               copy as unknown as SessionNormalizable,
               savedStates,

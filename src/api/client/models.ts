@@ -1,3 +1,5 @@
+import { comfyRoute } from './base';
+
 export interface LoraManagerRegistryNode {
   node_id: number;
   graph_id: string;
@@ -16,7 +18,7 @@ export interface LoraManagerRegistryNode {
 
 export async function registerLoraManagerNodes(nodes: LoraManagerRegistryNode[]): Promise<void> {
   if (nodes.length === 0) return;
-  const response = await fetch(`/api/lm/register-nodes`, {
+  const response = await fetch(comfyRoute('/api/lm/register-nodes'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ nodes })
@@ -34,7 +36,7 @@ export async function requestTriggerWords(
   nodeIds: TriggerWordTargetReference[]
 ): Promise<void> {
   if (!nodeIds || nodeIds.length === 0) return;
-  const response = await fetch(`/api/lm/loras/get_trigger_words`, {
+  const response = await fetch(comfyRoute('/api/lm/loras/get_trigger_words'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

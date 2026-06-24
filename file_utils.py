@@ -2,6 +2,9 @@ import os
 import time
 
 
+ENCRYPTED_OUTPUT_SUFFIX = '.zenc'
+
+
 def is_within_dir(base_dir, target_path):
     """True if target_path is base_dir itself or strictly inside it.
 
@@ -81,6 +84,19 @@ def _rel_fwd(path, start):
     return os.path.relpath(path, start).replace(os.sep, '/')
 
 
+def logical_name_for_encrypted_output(filename):
+    """Return the UI/logical name for an encrypted output sidecar.
+
+    The Z-Image wrapper encrypts generated files in place as e.g.
+    ``photo.png.zenc`` and removes ``photo.png``. ComfyUI Mobile should still
+    list and request the logical image name/path (``photo.png``); the wrapper's
+    /view and /image routes decrypt bytes on demand.
+    """
+    if filename.endswith(ENCRYPTED_OUTPUT_SUFFIX):
+        return filename[:-len(ENCRYPTED_OUTPUT_SUFFIX)]
+    return filename
+
+
 def search_path_for_entry(entry, scope_path=''):
     """Return an entry path relative to the active search scope."""
     path = str(entry.get('path', '')).replace(os.sep, '/')
@@ -131,16 +147,17 @@ def list_files(base_dir, target_path, *, recursive=False, show_hidden=False,
         if end_date and mtime_ms > int(end_date):
             return None
 
-        rel_path = _rel_fwd(full_path, base_dir)
+        logical_filename = logical_name_for_encrypted_output(filename)
+        rel_path = _rel_fwd(os.path.join(root, logical_filename), base_dir)
 
         if search and not entry_matches_name_or_path(
-            {"name": filename, "path": rel_path},
+            {"name": logical_filename, "path": rel_path},
             search,
             _rel_fwd(target_path, base_dir) if target_path != base_dir else "",
         ):
             return None
 
-        ext = os.path.splitext(filename)[1].lower()
+        ext = os.path.splitext(logical_filename)[1].lower()
         if ext in IMAGE_EXTENSIONS:
             kind = 'image'
         elif ext in VIDEO_EXTENSIONS:
@@ -149,7 +166,7 @@ def list_files(base_dir, target_path, *, recursive=False, show_hidden=False,
             return None
 
         return {
-            "name": filename,
+            "name": logical_filename,
             "path": rel_path,
             "type": kind,
             "size": stat.st_size,

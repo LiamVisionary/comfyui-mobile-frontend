@@ -1,4 +1,5 @@
 import type { Workflow } from '@/api/types';
+import { decryptWorkflowFromStorage } from '@/utils/workflowEncryption';
 
 // Extract a ComfyUI workflow embedded in an image's metadata, entirely on the
 // client (no upload/round-trip). ComfyUI embeds the litegraph workflow JSON as:
@@ -71,6 +72,22 @@ function readPngTextValue(b: Uint8Array, keyword: string): string | null {
         }
       }
     }
+    off = dataEnd + 4; // skip CRC
+  }
+  return null;
+}
+
+function readPngExif(b: Uint8Array): Uint8Array | null {
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  let off = 8;
+  while (off + 8 <= b.length) {
+    const len = view.getUint32(off);
+    const type = fourCC(b, off + 4);
+    const dataStart = off + 8;
+    const dataEnd = dataStart + len;
+    if (dataEnd + 4 > b.length) break;
+    if (type === 'IEND') break;
+    if (type === 'eXIf') return stripExifPrefix(b.subarray(dataStart, dataEnd));
     off = dataEnd + 4; // skip CRC
   }
   return null;
@@ -175,13 +192,81 @@ function readExifWorkflow(exif: Uint8Array | null): string | null {
   return value.slice(sep + 1);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function isWorkflow(value: unknown): value is Workflow {
+  return isRecord(value) && Array.isArray(value.nodes);
+}
+
+export type EncryptedWorkflowEnvelope = {
+  encrypted: true;
+  format: 'comfyui-mobile-encrypted-workflow';
+  version?: number;
+  kdf?: string;
+  cipher?: string;
+  iterations: number;
+  salt: string;
+  iv: string;
+  data: string;
+};
+
+export function isEncryptedWorkflowEnvelope(value: unknown): value is EncryptedWorkflowEnvelope {
+  return Boolean(
+    isRecord(value)
+      && value.encrypted === true
+      && value.format === 'comfyui-mobile-encrypted-workflow'
+      && typeof value.iterations === 'number'
+      && typeof value.salt === 'string'
+      && typeof value.iv === 'string'
+      && typeof value.data === 'string',
+  );
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+function base64ToArrayBuffer(value: string): ArrayBuffer {
+  return bytesToArrayBuffer(base64ToBytes(value));
+}
+
+export async function decryptWorkflowEnvelope(envelope: EncryptedWorkflowEnvelope): Promise<Workflow | null> {
+  try {
+    const parsed = await decryptWorkflowFromStorage<unknown>(envelope);
+    return isWorkflow(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseWorkflowJson(raw: string | null): Workflow | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Workflow;
-    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.nodes)) {
-      return parsed;
-    }
+    const parsed = JSON.parse(raw);
+    if (isWorkflow(parsed)) return parsed;
+  } catch {
+    // not valid JSON — treat as "no workflow"
+  }
+  return null;
+}
+
+async function parseWorkflowJsonAsync(raw: string | null): Promise<Workflow | null> {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (isWorkflow(parsed)) return parsed;
+    if (isEncryptedWorkflowEnvelope(parsed)) return decryptWorkflowEnvelope(parsed);
   } catch {
     // not valid JSON — treat as "no workflow"
   }
@@ -190,7 +275,12 @@ function parseWorkflowJson(raw: string | null): Workflow | null {
 
 /** Extract an embedded workflow from raw image bytes, or null if none/invalid. */
 export function extractWorkflowFromImageBytes(bytes: Uint8Array): Workflow | null {
-  if (isPng(bytes)) return parseWorkflowJson(readPngTextValue(bytes, 'workflow'));
+  if (isPng(bytes)) {
+    return (
+      parseWorkflowJson(readPngTextValue(bytes, 'workflow'))
+      ?? parseWorkflowJson(readExifWorkflow(readPngExif(bytes)))
+    );
+  }
   if (isWebp(bytes)) return parseWorkflowJson(readExifWorkflow(readWebpExif(bytes)));
   if (isJpeg(bytes)) return parseWorkflowJson(readExifWorkflow(readJpegExif(bytes)));
   return null;
@@ -199,5 +289,14 @@ export function extractWorkflowFromImageBytes(bytes: Uint8Array): Workflow | nul
 /** Read a File and extract its embedded ComfyUI workflow, or null if none. */
 export async function extractWorkflowFromImageFile(file: File): Promise<Workflow | null> {
   const buffer = await file.arrayBuffer();
-  return extractWorkflowFromImageBytes(new Uint8Array(buffer));
+  const bytes = new Uint8Array(buffer);
+  if (isPng(bytes)) {
+    return (
+      await parseWorkflowJsonAsync(readPngTextValue(bytes, 'workflow'))
+      ?? await parseWorkflowJsonAsync(readExifWorkflow(readPngExif(bytes)))
+    );
+  }
+  if (isWebp(bytes)) return parseWorkflowJsonAsync(readExifWorkflow(readWebpExif(bytes)));
+  if (isJpeg(bytes)) return parseWorkflowJsonAsync(readExifWorkflow(readJpegExif(bytes)));
+  return null;
 }

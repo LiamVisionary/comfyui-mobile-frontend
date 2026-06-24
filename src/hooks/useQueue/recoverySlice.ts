@@ -51,22 +51,41 @@ export const createQueueRecoverySlice: StateCreator<
 
   recordQueuedPrompt: (promptId, request, options) => {
     if (!promptId) return;
-    set((state) => ({
-      shadowQueueJobs: {
-        ...state.shadowQueueJobs,
-        [promptId]: {
-          originalPromptId: promptId,
-          prompt: request.prompt,
-          extraData: request.extra_data,
-          outputsToExecute: options?.outputsToExecute ?? [],
-          number: options?.number ?? 0,
-          status: 'pending',
-          queuedAt: Date.now(),
-          sessionId: options?.sessionId,
+    set((state) => {
+      const item = {
+        number: options?.number ?? 0,
+        prompt_id: promptId,
+        prompt: request.prompt,
+        extra: request.extra_data ?? {},
+        outputs_to_execute: options?.outputsToExecute ?? [],
+      };
+      const alreadyVisible =
+        state.running.some((existing) => existing.prompt_id === promptId) ||
+        state.pending.some((existing) => existing.prompt_id === promptId) ||
+        state.completing.some((existing) => existing.prompt_id === promptId);
+      return {
+        // Make the Run click visible immediately. Comfy can accept a prompt and
+        // then move it through /queue before the next mobile poll observes it;
+        // without a local card, the user sees “nothing happened” even though the
+        // backend is working. The next authoritative queue/history poll will
+        // demote, complete, or remove this optimistic running item.
+        running: alreadyVisible ? state.running : [...state.running, item],
+        shadowQueueJobs: {
+          ...state.shadowQueueJobs,
+          [promptId]: {
+            originalPromptId: promptId,
+            prompt: request.prompt,
+            extraData: request.extra_data,
+            outputsToExecute: options?.outputsToExecute ?? [],
+            number: options?.number ?? 0,
+            status: 'pending',
+            queuedAt: Date.now(),
+            sessionId: options?.sessionId,
+          },
         },
-      },
-      recoverableJobIds: state.recoverableJobIds.filter((id) => id !== promptId),
-    }));
+        recoverableJobIds: state.recoverableJobIds.filter((id) => id !== promptId),
+      };
+    });
   },
 
   markPromptCompleted: (promptId) => {

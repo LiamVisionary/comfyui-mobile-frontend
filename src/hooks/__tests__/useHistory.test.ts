@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { History, HistoryItem } from '@/api/types';
 import { useHistoryStore } from '@/hooks/useHistory';
 import { useQueueStore } from '@/hooks/useQueue';
+import { useWorkflowStore } from '@/hooks/useWorkflow';
 import { useWorkflowErrorsStore } from '@/hooks/useWorkflowErrors';
 import { getHistory, setFileHidden } from '@/api/client';
 import { HIDDEN_WORKFLOW_EXTRA_DATA_KEY } from '@/utils/workflowHidden';
 
 vi.mock('@/api/client', () => ({
+  clientId: 'test-client',
   getHistory: vi.fn(),
   getHistoryCount: vi.fn().mockResolvedValue(null),
   deleteHistoryItem: vi.fn(),
@@ -61,6 +63,13 @@ beforeEach(() => {
     showQueueMetadata: false,
     previewVisibility: {},
     previewVisibilityDefault: false,
+    shadowQueueJobs: {},
+  });
+  useWorkflowStore.setState({
+    activeSessionId: 'active-session',
+    promptToSession: {},
+    nodeOutputs: {},
+    parkedSessions: {},
   });
   useWorkflowErrorsStore.setState({
     error: null,
@@ -142,6 +151,36 @@ describe('useHistoryStore', () => {
     markSpy.mockRestore();
   });
 
+  it('rebuilds when a history output node gains its image filename after an early poll', async () => {
+    const empty = makeHistoryItem('late-image', {
+      status_str: 'success',
+      completed: true,
+      messages: [],
+    });
+    empty.outputs = { '9': {} };
+    const filled = makeHistoryItem('late-image', {
+      status_str: 'success',
+      completed: true,
+      messages: [],
+    });
+    filled.outputs = {
+      '9': {
+        images: [{ filename: 'late-image.png', subfolder: '', type: 'output' }],
+      },
+    };
+    mockGetHistory
+      .mockResolvedValueOnce({ 'late-image': empty })
+      .mockResolvedValueOnce({ 'late-image': filled });
+
+    await useHistoryStore.getState().fetchHistory();
+    expect(useHistoryStore.getState().history[0].outputs.images).toEqual([]);
+
+    await useHistoryStore.getState().fetchHistory();
+    expect(useHistoryStore.getState().history[0].outputs.images).toEqual([
+      { filename: 'late-image.png', subfolder: '', type: 'output' },
+    ]);
+  });
+
   it('retains the backend prompt payload for exact re-enqueue', async () => {
     const promptId = 'stopped-prompt';
     const prompt = { '1': { class_type: 'Sampler', inputs: { seed: 42 } } };
@@ -163,6 +202,153 @@ describe('useHistoryStore', () => {
       },
       outputsToExecute: ['9'],
     });
+  });
+
+  it('hydrates workflow node outputs from completed history when websocket output events are absent', async () => {
+    const promptId = 'anima-history-prompt';
+    const output = {
+      filename: 'anima_wai_couple_turbo_fast_00006_.png',
+      subfolder: '',
+      type: 'output',
+    };
+    const item = makeHistoryItem(promptId, {
+      status_str: 'success',
+      completed: true,
+      messages: [],
+    });
+    item.outputs = {
+      '9': {
+        images: [output],
+      },
+    };
+    useWorkflowStore.setState({
+      activeSessionId: 'active-session',
+      promptToSession: { [promptId]: 'active-session' },
+      nodeOutputs: {},
+    });
+    mockGetHistory.mockResolvedValue({ [promptId]: item });
+
+    await useHistoryStore.getState().fetchHistory();
+
+    expect(useWorkflowStore.getState().nodeOutputs['9']).toEqual([output]);
+  });
+
+  it('hydrates current-client history outputs into the active session when prompt routing was lost', async () => {
+    const promptId = 'same-client-history-prompt';
+    const output = {
+      filename: 'same_client_output.png',
+      subfolder: '',
+      type: 'output',
+    };
+    const item = makeHistoryItem(promptId, {
+      status_str: 'success',
+      completed: true,
+      messages: [],
+    });
+    item.prompt = [1, promptId, {}, { client_id: 'test-client' }, ['9']];
+    item.outputs = {
+      '9': {
+        images: [output],
+      },
+    };
+    useWorkflowStore.setState({
+      activeSessionId: 'active-session',
+      promptToSession: {},
+      nodeOutputs: {},
+    });
+    mockGetHistory.mockResolvedValue({ [promptId]: item });
+
+    await useHistoryStore.getState().fetchHistory();
+
+    expect(useWorkflowStore.getState().nodeOutputs['9']).toEqual([output]);
+  });
+
+  it('keeps the newest history output for a node when older entries share the same output node id', async () => {
+    const oldOutput = {
+      filename: 'old_save_image.png',
+      subfolder: '',
+      type: 'output',
+    };
+    const newOutput = {
+      filename: 'new_save_image.png',
+      subfolder: '',
+      type: 'output',
+    };
+    const oldItem = makeHistoryItem('old-node-output-prompt', {
+      status_str: 'success',
+      completed: true,
+      messages: [
+        ['execution_start', { timestamp: 1_000 }],
+        ['execution_success', { timestamp: 1_100 }],
+      ],
+    });
+    oldItem.outputs = { '9': { images: [oldOutput] } };
+    const newItem = makeHistoryItem('new-node-output-prompt', {
+      status_str: 'success',
+      completed: true,
+      messages: [
+        ['execution_start', { timestamp: 2_000 }],
+        ['execution_success', { timestamp: 2_100 }],
+      ],
+    });
+    newItem.outputs = { '9': { images: [newOutput] } };
+    useWorkflowStore.setState({
+      activeSessionId: 'active-session',
+      promptToSession: {
+        'old-node-output-prompt': 'active-session',
+        'new-node-output-prompt': 'active-session',
+      },
+      nodeOutputs: {},
+    });
+    mockGetHistory.mockResolvedValue({
+      'old-node-output-prompt': oldItem,
+      'new-node-output-prompt': newItem,
+    });
+
+    await useHistoryStore.getState().fetchHistory();
+
+    expect(useWorkflowStore.getState().nodeOutputs['9']).toEqual([newOutput]);
+  });
+
+  it('does not let an older history poll replace a live websocket node output', async () => {
+    const liveOutput = {
+      filename: 'fresh_live_save_image.png',
+      subfolder: '',
+      type: 'output',
+    };
+    const oldOutput = {
+      filename: 'old_history_save_image.png',
+      subfolder: '',
+      type: 'output',
+    };
+    const oldItem = makeHistoryItem('old-history-while-live-prompt', {
+      status_str: 'success',
+      completed: true,
+      messages: [
+        ['execution_start', { timestamp: 1_000 }],
+        ['execution_success', { timestamp: 1_100 }],
+      ],
+    });
+    oldItem.outputs = { '9': { images: [oldOutput] } };
+    useWorkflowStore.setState({
+      activeSessionId: 'active-session',
+      promptToSession: {
+        'old-history-while-live-prompt': 'active-session',
+      },
+      nodeOutputs: { '9': [liveOutput] },
+    });
+    useQueueStore.setState({
+      livePromptOutputs: {
+        'fresh-live-prompt': [liveOutput],
+      },
+    });
+    mockGetHistory.mockResolvedValue({
+      'old-history-while-live-prompt': oldItem,
+    });
+
+    await useHistoryStore.getState().fetchHistory();
+
+    expect(useWorkflowStore.getState().nodeOutputs['9']).toEqual([liveOutput]);
   });
 
   it('keeps the history array identity when a refetch returns identical content', async () => {
@@ -316,6 +502,35 @@ describe('useHistoryStore', () => {
       errorMessage: 'Video combine failed',
     });
     expect(useWorkflowErrorsStore.getState().error).toBe('Video combine failed');
+  });
+
+  it('surfaces explicit execution errors for prompts already moved to completing', async () => {
+    const promptId = 'completing-error-prompt';
+    useQueueStore.setState({
+      completing: [
+        {
+          number: 3,
+          prompt_id: promptId,
+          prompt: {},
+          extra: {},
+          outputs_to_execute: ['94'],
+        },
+      ],
+    });
+    mockGetHistory.mockResolvedValue({
+      [promptId]: makeHistoryItem(promptId, {
+        status_str: 'error',
+        completed: false,
+        messages: [
+          ['execution_start', { timestamp: 1000 }],
+          ['execution_error', { exception_message: 'Missing MXFP8 block scales' }],
+        ],
+      }),
+    } satisfies History);
+
+    await useHistoryStore.getState().fetchHistory();
+
+    expect(useWorkflowErrorsStore.getState().error).toBe('Missing MXFP8 block scales');
   });
 
   it('does not resurface an old failed item across a two-phase / repeated fetch', async () => {

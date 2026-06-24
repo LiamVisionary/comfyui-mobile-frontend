@@ -265,21 +265,12 @@ export const useQueueStore = create<QueueState>()(
               }
             }
             const completing = Array.from(completingById.values());
-            const runningWithNative = [...running];
-            const runningIds = new Set(runningWithNative.map((item) => item.prompt_id));
-            for (const shadow of Object.values(shadowQueueJobs)) {
-              if (shadow.status !== 'running' || runningIds.has(shadow.originalPromptId)) continue;
-              if (completingById.has(shadow.originalPromptId)) continue;
-              runningWithNative.push({
-                number: shadow.number ?? 0,
-                prompt_id: shadow.originalPromptId,
-                prompt: shadow.prompt ?? {},
-                extra: shadow.extraData ?? {},
-                outputs_to_execute: shadow.outputsToExecute ?? [],
-              });
-            }
+            // Only the authoritative backend queue/native-history poll may mark
+            // something as running. Persisted shadow jobs are recovery metadata;
+            // re-promoting them after a reload creates phantom “Running” progress
+            // cards when the real job already finished or disappeared.
             return {
-              running: sameQueueItems(state.running, runningWithNative) ? state.running : runningWithNative,
+              running: sameQueueItems(state.running, running) ? state.running : running,
               pending: sameQueueItems(state.pending, pending) ? state.pending : pending,
               completing: sameQueueItems(state.completing, completing)
                 ? state.completing
@@ -537,14 +528,6 @@ export const useQueueStore = create<QueueState>()(
               ...state.queueMetadata,
               ...metadata,
             },
-            workflowDiffs: capWorkflowDiffs({
-              ...state.workflowDiffs,
-              ...Object.fromEntries(
-                Object.entries(metadata)
-                  .filter(([, entry]) => Boolean(entry.workflowDiff))
-                  .map(([promptId, entry]) => [promptId, entry.workflowDiff as QueueWorkflowDiff]),
-              ),
-            }),
           }));
         } catch (err) {
           console.warn('Failed to fetch mobile queue metadata:', err);
@@ -555,19 +538,23 @@ export const useQueueStore = create<QueueState>()(
     {
       name: 'queue-storage',
       storage: createJSONStorage(() => idbStorage),
+      version: 2,
+      migrate: (persistedState) => ({
+        ...(persistedState as Partial<QueueState>),
+        showPromptPreview: false,
+        workflowDiffs: {},
+        shadowQueueJobs: {},
+        recoverableJobIds: [],
+        autoRestoredPromptIds: {},
+      }),
       partialize: (state) => ({
         queueItemExpanded: state.queueItemExpanded,
         queueItemUserToggled: state.queueItemUserToggled,
         queueItemHideImages: state.queueItemHideImages,
         showQueueMetadata: state.showQueueMetadata,
         showQueueTimestamps: state.showQueueTimestamps,
-        showPromptPreview: state.showPromptPreview,
         previewVisibility: state.previewVisibility,
         previewVisibilityDefault: state.previewVisibilityDefault,
-        workflowDiffs: state.workflowDiffs,
-        shadowQueueJobs: state.shadowQueueJobs,
-        recoverableJobIds: state.recoverableJobIds,
-        autoRestoredPromptIds: state.autoRestoredPromptIds,
       })
     }
   )

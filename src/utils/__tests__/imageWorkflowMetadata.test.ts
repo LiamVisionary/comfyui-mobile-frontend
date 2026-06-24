@@ -34,6 +34,15 @@ function makePng(textChunks: Array<{ keyword: string; text: string }>): Uint8Arr
   return Uint8Array.from([...sig, ...body]);
 }
 
+function makePngWithExif(exif: number[]): Uint8Array {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  return Uint8Array.from([
+    ...sig,
+    ...pngChunk('eXIf', exif),
+    ...pngChunk('IEND', []),
+  ]);
+}
+
 // --- EXIF (TIFF, little-endian) builder, used by webp + jpeg -------------
 function makeExifWithMake(value: string): number[] {
   return makeExifWithMakeBytes(ascii(value));
@@ -91,6 +100,13 @@ describe('extractWorkflowFromImageBytes', () => {
       { keyword: 'prompt', text: '{"foo":1}' },
       { keyword: 'workflow', text: SAMPLE_WORKFLOW },
     ]);
+    const wf = extractWorkflowFromImageBytes(png);
+    expect(wf).not.toBeNull();
+    expect(wf!.nodes[0].type).toBe('KSampler');
+  });
+
+  it('extracts a workflow from a PNG eXIf chunk (Make = "workflow:{json}")', () => {
+    const png = makePngWithExif(makeExifWithMake(`workflow:${SAMPLE_WORKFLOW}`));
     const wf = extractWorkflowFromImageBytes(png);
     expect(wf).not.toBeNull();
     expect(wf!.nodes[0].type).toBe('KSampler');

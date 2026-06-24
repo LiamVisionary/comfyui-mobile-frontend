@@ -24,7 +24,8 @@ def test_upsert_and_get_prompt_metadata(tmp_path: Path):
         "filename": "wf.json",
     }
     assert metadata["prompt-a"]["sessionId"] == "session-a"
-    assert metadata["prompt-a"]["workflowDiff"] == {"prompts": [], "nodeChanges": []}
+    assert "workflowDiff" not in metadata["prompt-a"]
+    assert metadata["prompt-a"]["workflowDiffRedacted"] is True
 
 
 def test_remap_prompt_metadata_moves_entry(tmp_path: Path):

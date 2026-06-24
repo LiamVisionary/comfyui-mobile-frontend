@@ -481,6 +481,114 @@ function findKJSetterNode(
   );
 }
 
+function isPromptAssistantGenerateNodeType(classType: string, nodeType: string): boolean {
+  return classType === 'PromptAssistantGenerate' || nodeType === 'PromptAssistantGenerate';
+}
+
+function normalizePromptAssistantTextInput(value: unknown): string {
+  return value == null ? '' : String(value);
+}
+
+function looksLikeStructuredPositivePrompt(value: string): boolean {
+  const text = value.trim();
+  if (!text) return false;
+  return (
+    (text.startsWith('{') &&
+      (text.includes('"high_level_description"') ||
+        text.includes('"compositional_deconstruction"'))) ||
+    (/"bbox"\s*:/.test(text) && /"desc"\s*:/.test(text))
+  );
+}
+
+function parseLeadingJsonObject(value: string): Record<string, unknown> | null {
+  const text = value.trim();
+  if (!text.startsWith('{')) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(text.slice(0, index + 1));
+          return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function structuredPositivePromptToText(value: unknown): string | null {
+  const text = typeof value === 'string' ? value : '';
+  const parsed = parseLeadingJsonObject(text);
+  if (!parsed) return null;
+  const composition = parsed.compositional_deconstruction;
+  if (!composition || typeof composition !== 'object' || Array.isArray(composition)) return null;
+  const compositionRecord = composition as Record<string, unknown>;
+  const elements = Array.isArray(compositionRecord.elements) ? compositionRecord.elements : [];
+  const parts: string[] = [];
+  if (typeof parsed.high_level_description === 'string' && parsed.high_level_description.trim()) {
+    parts.push(parsed.high_level_description.trim());
+  }
+  if (typeof compositionRecord.background === 'string' && compositionRecord.background.trim()) {
+    parts.push(compositionRecord.background.trim());
+  }
+  for (const element of elements) {
+    if (!element || typeof element !== 'object' || Array.isArray(element)) continue;
+    const desc = (element as Record<string, unknown>).desc;
+    if (typeof desc === 'string' && desc.trim()) parts.push(desc.trim());
+  }
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
+function applyPromptAssistantQueueDefaults(
+  classType: string,
+  node: WorkflowNode,
+  inputs: Record<string, unknown>,
+): void {
+  if (!isPromptAssistantGenerateNodeType(classType, node.type)) return;
+
+  inputs.idea = '';
+  inputs.context = '';
+  inputs.image_caption = '';
+  inputs.extra_instructions = '';
+  inputs.prompt = normalizePromptAssistantTextInput(inputs.prompt);
+  inputs.negative_prompt = normalizePromptAssistantTextInput(inputs.negative_prompt);
+  if (
+    String(inputs.prompt).trim() === '' &&
+    looksLikeStructuredPositivePrompt(String(inputs.negative_prompt))
+  ) {
+    inputs.prompt = inputs.negative_prompt;
+    inputs.negative_prompt = '';
+  }
+  if (inputs.helper_mode == null || String(inputs.helper_mode).trim() === '') {
+    inputs.helper_mode = 'Regional prompt';
+  }
+  inputs.emit_ui_text = true;
+  inputs.auto_generate_on_queue = false;
+}
+
 export function buildWorkflowPromptInputs(
   workflow: Workflow,
   nodeTypes: NodeTypes,
@@ -589,7 +697,11 @@ export function buildWorkflowPromptInputs(
           widgetCursor = Math.max(widgetCursor, indexToUse + 1);
         }
 
-        if (String(typeOrOptions) === 'INT' && (name === 'seed' || name === 'noise_seed')) {
+        if (
+          String(typeOrOptions) === 'INT' &&
+          (name === 'seed' || name === 'noise_seed') &&
+          !isPromptAssistantGenerateNodeType(classType, node.type)
+        ) {
           const seedSlot = indexToUse ?? (widgetCursor - 1);
           if (skipImplicitSeedControlSlot(node, seedSlot + 1)) {
             if (indexToUse !== undefined) {
@@ -655,8 +767,125 @@ export function buildWorkflowPromptInputs(
 
   appendLoraManagerInputs(node, inputs, widgetValuesArray, widgetIndexMap);
   appendTriggerWordToggleInputs(node, inputs, widgetValuesArray, widgetIndexMap);
+  applyPromptAssistantQueueDefaults(classType, node, inputs);
 
   return inputs;
+}
+
+function resolveClassType(nodeTypes: NodeTypes, node: WorkflowNode): string | null {
+  if (nodeTypes[node.type]) return node.type;
+  const match = Object.entries(nodeTypes).find(
+    ([, def]) => def.display_name === node.type || def.name === node.type,
+  );
+  return match?.[0] ?? null;
+}
+
+function promptKeyForNode(node: WorkflowNode, promptKeyMap?: Map<number, string>): string {
+  return promptKeyMap?.get(node.id) ?? String(node.id);
+}
+
+function fallbackPromptKeyForSource(node: WorkflowNode, promptKeyMap?: Map<number, string>): string {
+  return `__mobile_fallback_positive_${promptKeyForNode(node, promptKeyMap).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
+function isLinkedInput(value: unknown): value is [string, number] {
+  return Array.isArray(value) && value.length >= 2 && typeof value[1] === 'number';
+}
+
+/**
+ * Repair the common Anima "Couple Regions bypassed" shape.
+ *
+ * A bypassed node normally behaves like a reroute, but
+ * ForgeCoupleRegionalPrompt creates CONDITIONING from prompt text + CLIP. It
+ * has no upstream CONDITIONING input to pass through, so bypassing it leaves
+ * KSampler.positive unset and Comfy queues only unrelated output nodes. When
+ * that happens, synthesize a normal CLIPTextEncode node from the same prompt
+ * text and CLIP input, then wire KSampler.positive to it.
+ *
+ * Some editor graphs also drop a neighboring linked CLIPTextEncode while
+ * resolving the bypass. If KSampler.positive/negative is missing but the graph
+ * still has a direct CONDITIONING link, serialize that linked source node and
+ * wire it back in.
+ */
+export function applyBypassedRegionalPromptFallbacks(
+  workflow: Workflow,
+  nodeTypes: NodeTypes,
+  prompt: Record<string, unknown>,
+  allowedNodeIds: Set<number>,
+  promptKeyMap?: Map<number, string>,
+  seedOverrides?: Record<number, number>,
+): void {
+  if (!nodeTypes.CLIPTextEncode) return;
+
+  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const linksById = new Map(workflow.links.map((link) => [link[0], link]));
+
+  for (const node of workflow.nodes) {
+    if (node.mode === 4) continue;
+    const classType = resolveClassType(nodeTypes, node);
+    if (classType !== 'KSampler' && classType !== 'KSamplerAdvanced') continue;
+
+    const samplerPromptKey = promptKeyForNode(node, promptKeyMap);
+    const samplerPrompt = prompt[samplerPromptKey] as { inputs?: Record<string, unknown> } | undefined;
+    if (!samplerPrompt?.inputs) continue;
+
+    for (const inputName of ['positive', 'negative'] as const) {
+      if (samplerPrompt.inputs[inputName] !== undefined) continue;
+
+      const conditioningInput = node.inputs.find((input) => input.name === inputName);
+      if (conditioningInput?.link == null) continue;
+      const conditioningLink = linksById.get(conditioningInput.link);
+      if (!conditioningLink) continue;
+
+      const sourceNode = nodesById.get(conditioningLink[1]);
+      if (!sourceNode) continue;
+      const sourceOutput = sourceNode.outputs[conditioningLink[2]];
+      if (String(sourceOutput?.type || '').toUpperCase() !== 'CONDITIONING') continue;
+
+      const sourceClassType = resolveClassType(nodeTypes, sourceNode);
+      if (!sourceClassType) continue;
+      const sourceInputs = buildWorkflowPromptInputs(
+        workflow,
+        nodeTypes,
+        sourceNode,
+        sourceClassType,
+        allowedNodeIds,
+        getNodeWidgetIndexMap(workflow, sourceNode),
+        seedOverrides,
+        promptKeyMap,
+      );
+
+      if (sourceNode.mode !== 4) {
+        const sourcePromptKey = promptKeyForNode(sourceNode, promptKeyMap);
+        if (!prompt[sourcePromptKey]) {
+          prompt[sourcePromptKey] = {
+            class_type: sourceClassType,
+            inputs: sourceInputs,
+          };
+        }
+        samplerPrompt.inputs[inputName] = [sourcePromptKey, conditioningLink[2]];
+        continue;
+      }
+
+      if (inputName !== 'positive' || sourceNode.type !== 'ForgeCoupleRegionalPrompt') continue;
+
+      const text = structuredPositivePromptToText(sourceInputs.positive_text) ?? sourceInputs.positive_text;
+      const clip = sourceInputs.clip;
+      if (!text || !isLinkedInput(clip)) continue;
+
+      const fallbackKey = fallbackPromptKeyForSource(sourceNode, promptKeyMap);
+      if (!prompt[fallbackKey]) {
+        prompt[fallbackKey] = {
+          class_type: 'CLIPTextEncode',
+          inputs: {
+            clip,
+            text,
+          },
+        };
+      }
+      samplerPrompt.inputs.positive = [fallbackKey, 0];
+    }
+  }
 }
 
 function appendLoraManagerInputs(

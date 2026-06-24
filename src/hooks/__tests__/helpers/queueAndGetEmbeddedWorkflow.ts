@@ -2,6 +2,7 @@ import { expect, vi } from 'vitest';
 import type { Workflow } from '@/api/types';
 import type { PromptQueueRequest } from '@/api/client';
 import { useWorkflowStore } from '@/hooks/useWorkflow';
+import { decryptWorkflowFromStorage, setWorkflowEncryptionKey } from '@/utils/workflowEncryption';
 
 export async function queueAndGetPromptRequest(): Promise<PromptQueueRequest> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -18,6 +19,7 @@ export async function queueAndGetPromptRequest(): Promise<PromptQueueRequest> {
     };
   });
   vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+  setWorkflowEncryptionKey('vitest-workflow-unlock');
 
   await useWorkflowStore.getState().queueWorkflow(1);
   const promptCall = fetchMock.mock.calls.find(([input]) =>
@@ -30,9 +32,9 @@ export async function queueAndGetPromptRequest(): Promise<PromptQueueRequest> {
 
 export async function queueAndGetEmbeddedWorkflow(): Promise<Workflow> {
   const body = await queueAndGetPromptRequest() as PromptQueueRequest & {
-    extra_data?: { extra_pnginfo?: { workflow?: Workflow } };
+    extra_data?: { extra_pnginfo?: { workflow?: unknown } };
   };
   const embedded = body.extra_data?.extra_pnginfo?.workflow;
   expect(embedded).toBeDefined();
-  return embedded as Workflow;
+  return decryptWorkflowFromStorage<Workflow>(embedded);
 }

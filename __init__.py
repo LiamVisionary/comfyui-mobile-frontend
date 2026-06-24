@@ -871,9 +871,11 @@ def setup_mobile_route():
             if not prompt_ids:
                 ids_param = request.query.get('ids', '')
                 prompt_ids = [item for item in ids_param.split(',') if item]
+            if not prompt_ids:
+                return web.json_response({"prompts": {}})
             metadata = _mobile_queue_metadata.get_prompt_metadata(
                 QUEUE_METADATA_CACHE_PATH,
-                prompt_ids if prompt_ids else None,
+                prompt_ids,
             )
             return web.json_response({"prompts": metadata})
         except Exception as e:
