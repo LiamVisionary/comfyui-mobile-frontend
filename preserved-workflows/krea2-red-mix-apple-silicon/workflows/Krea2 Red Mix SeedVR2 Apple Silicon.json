@@ -1,8 +1,8 @@
 {
   "id": "dc3eb2e2-3e34-498b-9236-7ac065cd3e87",
   "revision": 0,
-  "last_node_id": 70,
-  "last_link_id": 104,
+  "last_node_id": 71,
+  "last_link_id": 105,
   "nodes": [
     {
       "id": 29,
@@ -290,7 +290,13 @@
       "flags": {},
       "order": 1,
       "mode": 0,
-      "inputs": [],
+      "inputs": [
+        {
+          "name": "lora_stack",
+          "type": "KREA2_LORA_STACK",
+          "link": 105
+        }
+      ],
       "outputs": [
         {
           "name": "IMAGE",
@@ -306,12 +312,48 @@
         "Node name for S&R": "Krea2MLXRedMixSampler"
       },
       "widgets_values": [
-        "{\n  \"subject\": {\n    \"description\": \"A cute young East Asian woman in her early 20s with fair skin and short black bob, lying down in bright sunlight, playfully winking at the camera.\",\n    \"mirror_rules\": \"Extreme close-up POV, very intimate framing with hands in foreground\",\n    \"age\": \"early 20s\",\n    \"expression\": {\n      \"eyes\": { \"look\": \"right eye wide open looking at camera, left eye winking/closed\", \"energy\": \"playful, teasing, cute and cheeky\", \"direction\": \"right eye directly toward viewer\" },\n      \"mouth\": { \"position\": \"soft gentle smile with slightly upturned corners\", \"energy\": \"sweet and mischievous\" },\n      \"overall\": \"playful wink + soft smile, charming and lighthearted\"\n    },\n    \"face\": { \"preserve_original\": \"soft features, full cheeks, natural double eyelids\", \"makeup\": \"light natural makeup, glossy coral-orange lips, subtle glow\" }\n  },\n  \"hair\": { \"color\": \"jet black\", \"style\": \"short bob with straight bangs\", \"effect\": \"shiny with strong sunlight highlights on strands\" },\n  \"body\": {\n    \"frame\": \"petite slim build\",\n    \"waist\": \"slender\",\n    \"chest\": \"upper chest visible\",\n    \"legs\": \"not visible\",\n    \"skin\": {\n      \"visible_areas\": \"face, neck, shoulders, upper chest\",\n      \"tone\": \"fair porcelain with warm undertones\",\n      \"texture\": \"smooth with visible natural texture and pores under harsh light\",\n      \"lighting_effect\": \"harsh directional sunlight creating distinct parallel striped shadows across face, neck and chest, bright highlights on skin\"\n    }\n  },\n  \"pose\": { \"position\": \"lying down / reclining, head resting on light-colored surface, looking up at camera\", \"base\": \"lying on back or side\", \"overall\": \"relaxed playful pose with head slightly tilted\" },\n  \"clothing\": {\n    \"top\": { \"type\": \"white thin-strap camisole\", \"color\": \"off-white\", \"details\": \"delicate spaghetti strap visible on left shoulder, soft fabric\", \"effect\": \"casual and light, skin visible around strap\" },\n    \"bottom\": { \"type\": \"not visible\", \"color\": \"\", \"details\": \"\" }\n  },\n  \"accessories\": { \"headwear\": \"none\", \"jewelry\": \"small earrings\", \"device\": \"smartphone implied\", \"prop\": \"hands in foreground framing the composition (large hand at top, blurred hand at bottom)\" },\n  \"photography\": {\n    \"camera_style\": \"casual extreme close-up POV smartphone photo, very intimate\",\n    \"angle\": \"high angle / overhead close-up, looking down at her face\",\n    \"shot_type\": \"extreme close-up on face and upper chest\",\n    \"aspect_ratio\": \"portrait, vertical\",\n    \"texture\": \"high detail on skin texture, hair strands, fabric\",\n    \"lighting\": \"strong directional sunlight with clear parallel striped shadows (window blinds effect), high contrast, bright highlights and deep shadows\",\n    \"depth_of_field\": \"shallow depth of field, sharp on the open eye and facial features, foreground hands slightly soft\"\n  },\n  \"background\": {\n    \"setting\": \"bright sunlit indoor space, light-colored chair or cushion\",\n    \"wall_color\": \"bright overexposed light tones\",\n    \"elements\": [\"light-colored woven or grid-textured surface under her head\", \"strong sunlight creating striped shadow patterns\"],\n    \"atmosphere\": \"bright, hot, sunny, intimate\",\n    \"lighting\": \"harsh golden sunlight from above/side, strong striped shadows\"\n  },\n  \"the_vibe\": {\n    \"energy\": \"playful, cheeky, sunny and intimate\",\n    \"mood\": \"fun, lighthearted, slightly teasing\",\n    \"aesthetic\": \"bright natural light photography, high contrast sunlight, casual intimate snapshot\",\n    \"authenticity\": \"real candid moment with visible strong shadow patterns\",\n    \"intimacy\": \"very high — extreme close-up, direct gaze from open eye, hands framing the shot\",\n    \"story\": \"a girl lying in strong sunlight, playfully winking at the camera while someone takes an extremely close photo\",\n    \"caption_energy\": \"playful sunny daily share, cute and cheeky\"\n  },\n  \"constraints\": {\n    \"must_keep\": [\n      \"short black bob with straight bangs\",\n      \"playful wink (left eye closed, right eye open looking at camera)\",\n      \"soft coral glossy lips and gentle smile\",\n      \"strong directional sunlight with distinct striped/blind shadows across face, neck and chest\",\n      \"hands visible in foreground framing top and bottom of frame\",\n      \"white thin camisole strap visible\",\n      \"extreme close-up overhead POV angle, lying down pose\",\n      \"bright overexposed sunny background with light-colored textured surface\"\n    ],\n    \"avoid\": [\n      \"both eyes open\",\n      \"soft diffused lighting\",\n      \"no hands in frame\",\n      \"studio or even lighting\",\n      \"full body or medium shot\",\n      \"dark or moody atmosphere\",\n      \"overly perfect skin without texture\"\n    ]\n  },\n  \"negative_prompt\": [\n    \"blurry\", \"low quality\", \"deformed\", \"bad anatomy\", \"extra limbs\", \"watermark\", \"text\", \"overexposed face\", \"flat lighting\", \"no shadows\", \"both eyes open\", \"serious expression\", \"cartoon\"\n  ]\n}",
+        "{\n  \"subject\": {\n    \"description\": \"A cute young East Asian woman in her early 20s with fair skin and short black bob, lying down in bright sunlight, playfully winking at the camera.\",\n    \"mirror_rules\": \"Extreme close-up POV, very intimate framing with hands in foreground\",\n    \"age\": \"early 20s\",\n    \"expression\": {\n      \"eyes\": { \"look\": \"right eye wide open looking at camera, left eye winking/closed\", \"energy\": \"playful, teasing, cute and cheeky\", \"direction\": \"right eye directly toward viewer\" },\n      \"mouth\": { \"position\": \"soft gentle smile with slightly upturned corners\", \"energy\": \"sweet and mischievous\" },\n      \"overall\": \"playful wink + soft smile, charming and lighthearted\"\n    },\n    \"face\": { \"preserve_original\": \"soft features, full cheeks, natural double eyelids\", \"makeup\": \"light natural makeup, glossy coral-orange lips, subtle glow\" }\n  },\n  \"hair\": { \"color\": \"jet black\", \"style\": \"short bob with straight bangs\", \"effect\": \"shiny with strong sunlight highlights on strands\" },\n  \"body\": {\n    \"frame\": \"petite slim build\",\n    \"waist\": \"slender\",\n    \"chest\": \"upper chest visible\",\n    \"legs\": \"not visible\",\n    \"skin\": {\n      \"visible_areas\": \"face, neck, shoulders, upper chest\",\n      \"tone\": \"fair porcelain with warm undertones\",\n      \"texture\": \"smooth with visible natural texture and pores under harsh light\",\n      \"lighting_effect\": \"harsh directional sunlight creating distinct parallel striped shadows across face, neck and chest, bright highlights on skin\"\n    }\n  },\n  \"pose\": { \"position\": \"lying down / reclining, head resting on light-colored surface, looking up at camera\", \"base\": \"lying on back or side\", \"overall\": \"relaxed playful pose with head slightly tilted\" },\n  \"clothing\": {\n    \"top\": { \"type\": \"white thin-strap camisole\", \"color\": \"off-white\", \"details\": \"delicate spaghetti strap visible on left shoulder, soft fabric\", \"effect\": \"casual and light, skin visible around strap\" },\n    \"bottom\": { \"type\": \"not visible\", \"color\": \"\", \"details\": \"\" }\n  },\n  \"accessories\": { \"headwear\": \"none\", \"jewelry\": \"small earrings\", \"device\": \"smartphone implied\", \"prop\": \"hands in foreground framing the composition (large hand at top, blurred hand at bottom)\" },\n  \"photography\": {\n    \"camera_style\": \"casual extreme close-up POV smartphone photo, very intimate\",\n    \"angle\": \"high angle / overhead close-up, looking down at her face\",\n    \"shot_type\": \"extreme close-up on face and upper chest\",\n    \"aspect_ratio\": \"portrait, vertical\",\n    \"texture\": \"high detail on skin texture, hair strands, fabric\",\n    \"lighting\": \"strong directional sunlight with clear parallel striped shadows (window blinds effect), high contrast, bright highlights and deep shadows\",\n    \"depth_of_field\": \"shallow depth of field, sharp on the open eye and facial features, foreground hands slightly soft\"\n  },\n  \"background\": {\n    \"setting\": \"bright sunlit indoor space, light-colored chair or cushion\",\n    \"wall_color\": \"bright overexposed light tones\",\n    \"elements\": [\"light-colored woven or grid-textured surface under her head\", \"strong sunlight creating striped shadow patterns\"],\n    \"atmosphere\": \"bright, hot, sunny, intimate\",\n    \"lighting\": \"harsh golden sunlight from above/side, strong striped shadows\"\n  },\n  \"the_vibe\": {\n    \"energy\": \"playful, cheeky, sunny and intimate\",\n    \"mood\": \"fun, lighthearted, slightly teasing\",\n    \"aesthetic\": \"bright natural light photography, high contrast sunlight, casual intimate snapshot\",\n    \"authenticity\": \"real candid moment with visible strong shadow patterns\",\n    \"intimacy\": \"very high \u2014 extreme close-up, direct gaze from open eye, hands framing the shot\",\n    \"story\": \"a girl lying in strong sunlight, playfully winking at the camera while someone takes an extremely close photo\",\n    \"caption_energy\": \"playful sunny daily share, cute and cheeky\"\n  },\n  \"constraints\": {\n    \"must_keep\": [\n      \"short black bob with straight bangs\",\n      \"playful wink (left eye closed, right eye open looking at camera)\",\n      \"soft coral glossy lips and gentle smile\",\n      \"strong directional sunlight with distinct striped/blind shadows across face, neck and chest\",\n      \"hands visible in foreground framing top and bottom of frame\",\n      \"white thin camisole strap visible\",\n      \"extreme close-up overhead POV angle, lying down pose\",\n      \"bright overexposed sunny background with light-colored textured surface\"\n    ],\n    \"avoid\": [\n      \"both eyes open\",\n      \"soft diffused lighting\",\n      \"no hands in frame\",\n      \"studio or even lighting\",\n      \"full body or medium shot\",\n      \"dark or moody atmosphere\",\n      \"overly perfect skin without texture\"\n    ]\n  },\n  \"negative_prompt\": [\n    \"blurry\", \"low quality\", \"deformed\", \"bad anatomy\", \"extra limbs\", \"watermark\", \"text\", \"overexposed face\", \"flat lighting\", \"no shadows\", \"both eyes open\", \"serious expression\", \"cartoon\"\n  ]\n}",
         960,
         1440,
         10,
         794015397137290,
-        1
+        1,
+        "flow_euler"
+      ]
+    },
+    {
+      "id": 71,
+      "type": "Krea2MLXMultiLoRAStack",
+      "pos": [
+        245.0,
+        520.0
+      ],
+      "size": [
+        450.0,
+        260.0
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "lora_stack",
+          "type": "KREA2_LORA_STACK",
+          "links": [
+            105
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "LOAD LORAS HERE - Multi LoRA Stack",
+      "properties": {
+        "Node name for S&R": "Krea2MLXMultiLoRAStack"
+      },
+      "widgets_values": [
+        "[{\"on\":false,\"lora\":\"snofs_krea_v1.safetensors\",\"strength\":1},{\"on\":false,\"lora\":\"realism_engine_krea2_v2.safetensors\",\"strength\":1},{\"on\":false,\"lora\":\"nicegirls_krea2.safetensors\",\"strength\":1},{\"on\":false,\"lora\":\"FAC1AL_v1_krea2.safetensors\",\"strength\":1},{\"on\":false,\"lora\":\"BreastSlider-KREA2.safetensors\",\"strength\":1}]"
       ]
     }
   ],
@@ -355,6 +397,14 @@
       68,
       0,
       "IMAGE"
+    ],
+    [
+      105,
+      71,
+      0,
+      70,
+      0,
+      "KREA2_LORA_STACK"
     ]
   ],
   "groups": [
@@ -412,7 +462,10 @@
         ]
       },
       "seedVR2Default": "disabled",
-      "appleSiliconModelPath": "diffusion_models/Krea2RedMix-10Steps-bf16-dequant-ComfyUI.safetensors"
+      "appleSiliconModelPath": "diffusion_models/Krea2RedMix-10Steps-bf16-dequant-ComfyUI.safetensors",
+      "notes": {
+        "loraStack": "Krea2MLXMultiLoRAStack feeds enabled Krea2 LoRA rows into Krea2MLXRedMixSampler and the native MLX sidecar. Starter rows are disabled by default."
+      }
     },
     "workflowMetadata": {
       "title": "Krea2 Red Mix SeedVR2 Apple Silicon",

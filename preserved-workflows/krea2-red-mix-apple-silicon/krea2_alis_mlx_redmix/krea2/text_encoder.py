@@ -10,6 +10,7 @@ HF tokenizer (as mflux does); the model forward is pure MLX.
 from __future__ import annotations
 
 import glob
+import os
 
 import mlx.core as mx
 import numpy as np
@@ -181,6 +182,7 @@ class Qwen3VLConditioner:
                                f"suffix={ns_} (expected {SUFFIX_START_IDX})")
         self.max_length = max_length
         self.dtype = dtype
+        self.dynamic_length = os.environ.get("KREA2_MLX_DYNAMIC_TEXT_LENGTH", "0").lower() in {"1", "true", "yes", "on"}
         self.model, self.nloaded = load_text_encoder(repo, dtype)
 
     def __call__(self, prompts: list[str]) -> tuple[mx.array, mx.array]:
@@ -189,7 +191,7 @@ class Qwen3VLConditioner:
         suffix = [SUFFIX] * len(text)
         suf = self.tokenizer(text=suffix, return_tensors="np")
         inp = self.tokenizer(
-            text, truncation=True, padding="max_length",
+            text, truncation=True, padding=True if self.dynamic_length else "max_length",
             max_length=self.max_length + prefix_idx - SUFFIX_START_IDX, return_tensors="np",
         )
         input_ids = np.concatenate([inp["input_ids"], suf["input_ids"]], axis=1)

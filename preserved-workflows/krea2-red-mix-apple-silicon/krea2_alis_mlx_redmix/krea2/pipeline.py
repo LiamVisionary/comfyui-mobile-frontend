@@ -182,9 +182,25 @@ class Krea2Pipeline:
         mx.eval(m.parameters())
         self.transformer = m
         self.vae = _load_vae(base)
-        self.encoder = Qwen3VLConditioner(base, dtype=mx.bfloat16)
+        try:
+            text_max_length = int(os.environ.get("KREA2_MLX_TEXT_MAX_LENGTH", "512"))
+        except ValueError:
+            text_max_length = 512
+        text_max_length = max(64, min(512, text_max_length))
+        self.encoder = Qwen3VLConditioner(base, max_length=text_max_length, dtype=mx.bfloat16)
 
-    def generate(self, prompt, *, width=1024, height=1024, steps=8, seed=0, num_images=1, step_callback=None):
+    def generate(
+        self,
+        prompt,
+        *,
+        width=1024,
+        height=1024,
+        steps=8,
+        seed=0,
+        num_images=1,
+        sampler="flow_euler",
+        step_callback=None,
+    ):
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string.")
         try:  # uniform ValueError for None / non-numeric / inf / nan (not TypeError / OverflowError)
@@ -202,7 +218,24 @@ class Krea2Pipeline:
             raise ValueError(f"num_images must be in [1, 8], got {num_images}.")
         if not 0 <= seed < 2**64:  # mx.random.seed wants a non-negative uint64 (else a bare TypeError)
             raise ValueError(f"seed must be in [0, 2^64), got {seed}.")
+        dtype_name = os.environ.get("KREA2_MLX_ACTIVATION_DTYPE", "bf16").lower()
+        if dtype_name in {"fp16", "float16"}:
+            activation_dtype = mx.float16
+        elif dtype_name in {"bf16", "bfloat16"}:
+            activation_dtype = mx.bfloat16
+        else:
+            raise ValueError(
+                "KREA2_MLX_ACTIVATION_DTYPE must be 'bf16'/'bfloat16' or 'fp16'/'float16', "
+                f"got {dtype_name!r}."
+            )
+        eval_each_step = os.environ.get("KREA2_MLX_EVAL_EACH_STEP", "0").lower() in {"1", "true", "yes", "on"}
+        profile = {} if os.environ.get("KREA2_MLX_PROFILE_STAGES", "0").lower() in {"1", "true", "yes", "on"} else None
+        er_sde_max_stage = int(os.environ.get("KREA2_MLX_ER_SDE_MAX_STAGE", "3"))
+        er_sde_s_noise = float(os.environ.get("KREA2_MLX_ER_SDE_S_NOISE", "0.0"))
         dec = sample(self.transformer, self.vae, self.encoder, [prompt] * num_images,
                      width=width, height=height, steps=steps, guidance=0.0, seed=seed,
-                     step_callback=step_callback)
+                     dtype=activation_dtype, step_callback=step_callback, eval_each_step=eval_each_step,
+                     profile=profile, sampler=sampler, er_sde_max_stage=er_sde_max_stage,
+                     er_sde_s_noise=er_sde_s_noise)
+        self.last_profile = profile
         return to_pil(dec)

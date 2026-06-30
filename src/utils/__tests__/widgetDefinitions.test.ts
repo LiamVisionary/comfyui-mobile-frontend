@@ -172,6 +172,45 @@ describe('widgetDefinitions lora manager support', () => {
     });
   });
 
+  it('builds editable widgets for the Krea2 MLX multi LoRA stack node', () => {
+    const nodeTypes: NodeTypes = {
+      LoraLoader: {
+        input: {
+          required: {
+            lora_name: [['snofs_krea_v1.safetensors'], {}],
+          },
+        },
+        output: [],
+        output_name: [],
+        name: 'LoraLoader',
+        display_name: 'LoraLoader',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const node = makeNode(71, 'Krea2MLXMultiLoRAStack', [
+      '[{"on":false,"lora":"snofs_krea_v1.safetensors","strength":1}]',
+    ]);
+
+    const defs = getWidgetDefinitions(nodeTypes, node);
+    expect(defs.map((def) => def.type)).toEqual([
+      'LM_LORA_HEADER',
+      'LM_LORA',
+      'LM_LORA_ADD',
+    ]);
+    expect(defs[1]).toMatchObject({
+      name: 'snofs_krea_v1.safetensors',
+      widgetIndex: 0,
+      value: {
+        name: 'snofs_krea_v1.safetensors',
+        strength: 1,
+        active: false,
+      },
+    });
+  });
+
   it('renders MFlux LoRA loader filename and strength widgets from object info', () => {
     const nodeTypes: NodeTypes = {
       MfluxLorasLoader: {

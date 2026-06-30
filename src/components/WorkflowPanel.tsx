@@ -58,6 +58,9 @@ import {
 
 const ANIMA_PROMPT_ASSISTANT_WORKFLOW_FILENAME =
   "Anima WAI Couple Turbo - Prompt Assistant.json";
+const KREA2_RED_MIX_WORKFLOW_FILENAME =
+  "Krea2 Red Mix SeedVR2 Apple Silicon.json";
+const KREA2_MULTI_LORA_STACK_NODE_TYPE = "Krea2MLXMultiLoRAStack";
 
 function isAnimaPromptAssistantWorkflowFilename(filename: string | null): boolean {
   if (!filename) return false;
@@ -68,6 +71,11 @@ function isBigLoveKlein3MlxTestWorkflowFilename(filename: string | null): boolea
   if (!filename) return false;
   const basename = filename.split("/").pop();
   return basename === BIGLOVE_KLEIN3_MLX_TEST_FILENAME || basename === "BigLoveKlein3MLXTest";
+}
+
+function isKrea2RedMixWorkflowFilename(filename: string | null): boolean {
+  if (!filename) return false;
+  return filename.split("/").pop() === KREA2_RED_MIX_WORKFLOW_FILENAME;
 }
 
 export const WorkflowPanel = memo(function WorkflowPanel({
@@ -197,6 +205,7 @@ export const WorkflowPanel = memo(function WorkflowPanel({
 
   const repairedMissingAnimaLoraStackRef = useRef<string | null>(null);
   const repairedMissingBigLoveLoraStackRef = useRef<string | null>(null);
+  const repairedMissingKrea2LoraStackRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!workflow || !isAnimaPromptAssistantWorkflowFilename(currentFilename)) return;
@@ -220,6 +229,31 @@ export const WorkflowPanel = memo(function WorkflowPanel({
       .catch((error) => {
         console.error("Failed to repair Anima prompt assistant workflow from disk:", error);
         repairedMissingAnimaLoraStackRef.current = null;
+      });
+  }, [currentFilename, loadWorkflow, workflow]);
+
+  useEffect(() => {
+    if (!workflow || !isKrea2RedMixWorkflowFilename(currentFilename)) return;
+    if (workflow.nodes?.some((node) => node.type === KREA2_MULTI_LORA_STACK_NODE_TYPE)) return;
+    if (repairedMissingKrea2LoraStackRef.current === currentFilename) return;
+
+    repairedMissingKrea2LoraStackRef.current = currentFilename;
+    void loadUserWorkflow(KREA2_RED_MIX_WORKFLOW_FILENAME)
+      .then((serverWorkflow) => {
+        if (!serverWorkflow.nodes?.some((node) => node.type === KREA2_MULTI_LORA_STACK_NODE_TYPE)) {
+          return;
+        }
+        const filename = currentFilename ?? KREA2_RED_MIX_WORKFLOW_FILENAME;
+        loadWorkflow(serverWorkflow, filename, {
+          fresh: true,
+          replaceActive: true,
+          navigate: false,
+          source: { type: "user", filename },
+        });
+      })
+      .catch((error) => {
+        console.error("Failed to repair Krea2 Red Mix workflow from disk:", error);
+        repairedMissingKrea2LoraStackRef.current = null;
       });
   }, [currentFilename, loadWorkflow, workflow]);
 

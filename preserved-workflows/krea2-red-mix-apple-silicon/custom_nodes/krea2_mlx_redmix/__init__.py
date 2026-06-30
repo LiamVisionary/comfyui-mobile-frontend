@@ -1,6 +1,7 @@
 import gc
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -13,6 +14,7 @@ import numpy as np
 import torch
 
 import comfy.utils
+import folder_paths
 
 
 KREA2_DIR = Path(os.environ.get("KREA2_MLX_DIR", str(Path.home() / "comfy/krea2_alis_mlx_redmix")))
@@ -45,18 +47,52 @@ _SIDECAR_OUTPUT_DIR = Path(os.environ.get(
     "KREA2_MLX_SIDECAR_OUTPUT_DIR",
     str(Path.home() / ".comfy-private.noindex/temp/krea2_mlx_sidecar"),
 ))
+_DEFAULT_MLX_CACHE_LIMIT_GB = "0"
+_DEFAULT_MLX_WIRED_LIMIT_FRACTION = "0.95"
 
 
 def _prepare_mlx_runtime(clear_cache=False):
     try:
         import mlx.core as mx
         info = mx.device_info()
-        mx.set_wired_limit(int(info["max_recommended_working_set_size"] * 0.9))
-        mx.set_cache_limit(int(os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "0")) * 1024**3)
+        wired_fraction = _desired_wired_limit_fraction()
+        cache_limit_gb = _desired_cache_limit_gb()
+        mx.set_wired_limit(int(info["max_recommended_working_set_size"] * wired_fraction))
+        mx.set_cache_limit(cache_limit_gb * 1024**3)
         if clear_cache:
             mx.clear_cache()
     except Exception:
         pass
+
+
+def _desired_cache_limit_gb():
+    try:
+        return max(0, int(os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", _DEFAULT_MLX_CACHE_LIMIT_GB)))
+    except ValueError:
+        return int(_DEFAULT_MLX_CACHE_LIMIT_GB)
+
+
+def _desired_wired_limit_fraction():
+    try:
+        return float(os.environ.get("KREA2_MLX_WIRED_LIMIT_FRACTION", _DEFAULT_MLX_WIRED_LIMIT_FRACTION))
+    except ValueError:
+        return float(_DEFAULT_MLX_WIRED_LIMIT_FRACTION)
+
+
+def _desired_activation_dtype():
+    return os.environ.get("KREA2_MLX_ACTIVATION_DTYPE", "bf16").lower()
+
+
+def _desired_text_max_length():
+    return os.environ.get("KREA2_MLX_TEXT_MAX_LENGTH", "512")
+
+
+def _desired_dynamic_text_length():
+    return _desired_bool_env("KREA2_MLX_DYNAMIC_TEXT_LENGTH", "0")
+
+
+def _desired_bool_env(name: str, default: str = "0"):
+    return os.environ.get(name, default).lower() in {"1", "true", "yes", "on"}
 
 
 def _clear_cache_before_each_run():
@@ -65,6 +101,10 @@ def _clear_cache_before_each_run():
 
 def _timings_enabled():
     return os.environ.get("KREA2_MLX_TIMINGS", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _recycle_sidecar_after_run():
+    return os.environ.get("KREA2_MLX_RECYCLE_SIDECAR_AFTER_RUN", "1").lower() in {"1", "true", "yes", "on"}
 
 
 def _request_json(path, payload=None, timeout=10):
@@ -79,11 +119,66 @@ def _request_json(path, payload=None, timeout=10):
         return json.loads(response.read().decode("utf-8"))
 
 
-def _sidecar_healthy():
+def _sidecar_status():
     try:
-        return bool(_request_json("/health", timeout=1).get("ok"))
+        return _request_json("/health", timeout=1)
     except Exception:
+        return None
+
+
+def _status_is_fast_path_healthy(payload):
+    if not (payload and payload.get("ok")):
         return False
+    features = set(payload.get("features") or [])
+    runtime = payload.get("runtime") or {}
+    return (
+        "lora_stack" in features
+        and "mlx_fast_path_report" in features
+        and runtime.get("compile_forward") is True
+        and str(runtime.get("activation_dtype")) == _desired_activation_dtype()
+        and str(runtime.get("text_max_length")) == _desired_text_max_length()
+        and bool(runtime.get("dynamic_text_length")) is _desired_dynamic_text_length()
+        and runtime.get("profile_stages") is _desired_bool_env("KREA2_MLX_PROFILE_STAGES", "0")
+        and runtime.get("eval_each_step") is False
+        and runtime.get("step_timings") is False
+        and str(runtime.get("mlx_metal_fast_synch")) == "1"
+        and str(runtime.get("mlx_enable_tf32", "")) == os.environ.get("MLX_ENABLE_TF32", "")
+        and str(runtime.get("mlx_metal_jit", "")) == os.environ.get("MLX_METAL_JIT", "")
+        and int(runtime.get("cache_limit_gb") or 0) == _desired_cache_limit_gb()
+        and abs(float(runtime.get("wired_limit_fraction") or 0.0) - _desired_wired_limit_fraction()) < 1e-6
+        and bool(runtime.get("background_sidecar")) is False
+    )
+
+
+def _sidecar_healthy():
+    payload = _sidecar_status()
+    return _status_is_fast_path_healthy(payload)
+
+
+def _stop_sidecar_listener():
+    global _SIDECAR_PROC
+    if _SIDECAR_PROC is not None and _SIDECAR_PROC.poll() is None:
+        _SIDECAR_PROC.terminate()
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/lsof", f"-tiTCP:{_SIDECAR_PORT}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for raw_pid in result.stdout.split():
+            try:
+                os.kill(int(raw_pid), signal.SIGTERM)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if _sidecar_status() is None:
+            break
+        time.sleep(0.1)
+    _SIDECAR_PROC = None
 
 
 def _ensure_sidecar():
@@ -93,6 +188,9 @@ def _ensure_sidecar():
     with _SIDECAR_LOCK:
         if _sidecar_healthy():
             return
+        status = _sidecar_status()
+        if status and status.get("ok") and not _status_is_fast_path_healthy(status):
+            _stop_sidecar_listener()
         _SIDECAR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         _SIDECAR_LOG.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
@@ -102,10 +200,22 @@ def _ensure_sidecar():
             "KREA2_REDMIX_TRANSFORMER": str(TRANSFORMER_PATH),
             "KREA2_MLX_SIDECAR_PORT": str(_SIDECAR_PORT),
             "KREA2_MLX_SIDECAR_OUTPUT_DIR": str(_SIDECAR_OUTPUT_DIR),
+            "PYTHONUNBUFFERED": "1",
             "MLX_METAL_FAST_SYNCH": os.environ.get("MLX_METAL_FAST_SYNCH", "1"),
             "KREA2_MLX_COMPILE_FORWARD": os.environ.get("KREA2_MLX_COMPILE_FORWARD", "1"),
-            "KREA2_MLX_CACHE_LIMIT_GB": os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "0"),
+            "KREA2_MLX_ACTIVATION_DTYPE": _desired_activation_dtype(),
+            "KREA2_MLX_TEXT_MAX_LENGTH": _desired_text_max_length(),
+            "KREA2_MLX_DYNAMIC_TEXT_LENGTH": os.environ.get("KREA2_MLX_DYNAMIC_TEXT_LENGTH", "0"),
+            "KREA2_MLX_PROFILE_STAGES": os.environ.get("KREA2_MLX_PROFILE_STAGES", "0"),
+            "KREA2_MLX_EVAL_EACH_STEP": os.environ.get("KREA2_MLX_EVAL_EACH_STEP", "0"),
+            "KREA2_MLX_STEP_TIMINGS": os.environ.get("KREA2_MLX_STEP_TIMINGS", "0"),
+            "KREA2_MLX_CACHE_LIMIT_GB": str(_desired_cache_limit_gb()),
+            "KREA2_MLX_WIRED_LIMIT_FRACTION": str(_desired_wired_limit_fraction()),
         })
+        if "MLX_ENABLE_TF32" in os.environ:
+            env["MLX_ENABLE_TF32"] = os.environ["MLX_ENABLE_TF32"]
+        if "MLX_METAL_JIT" in os.environ:
+            env["MLX_METAL_JIT"] = os.environ["MLX_METAL_JIT"]
         log = open(_SIDECAR_LOG, "ab", buffering=0)
         _SIDECAR_PROC = subprocess.Popen(
             [sys.executable, str(Path(__file__).with_name("sidecar.py"))],
@@ -114,11 +224,13 @@ def _ensure_sidecar():
             stdin=subprocess.DEVNULL,
             env=env,
             close_fds=True,
+            start_new_session=True,
         )
-        try:
-            subprocess.run(["/usr/sbin/taskpolicy", "-B", "-p", str(_SIDECAR_PROC.pid)], check=False)
-        except Exception:
-            pass
+        if os.environ.get("KREA2_MLX_BACKGROUND_SIDECAR", "0").lower() in {"1", "true", "yes", "on"}:
+            try:
+                subprocess.run(["/usr/sbin/taskpolicy", "-B", "-p", str(_SIDECAR_PROC.pid)], check=False)
+            except Exception:
+                pass
         deadline = time.time() + 20
         while time.time() < deadline:
             if _sidecar_healthy():
@@ -170,6 +282,88 @@ def _image_paths_to_tensor(paths):
     return torch.stack(tensors, dim=0)
 
 
+def _parse_lora_stack(lora_stack):
+    if not lora_stack:
+        return []
+    if isinstance(lora_stack, str):
+        text = lora_stack.strip()
+        if not text:
+            return []
+        try:
+            raw_entries = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Krea2 LoRA stack must be valid JSON.") from exc
+    elif isinstance(lora_stack, list):
+        raw_entries = lora_stack
+    else:
+        raise ValueError(f"Krea2 LoRA stack must be JSON text or a list, got {type(lora_stack).__name__}.")
+
+    if not isinstance(raw_entries, list):
+        raise ValueError("Krea2 LoRA stack must be a JSON list.")
+
+    active = []
+    for index, entry in enumerate(raw_entries):
+        if not isinstance(entry, dict):
+            continue
+        if not bool(entry.get("on", entry.get("active", False))):
+            continue
+        lora_name = str(entry.get("lora") or entry.get("name") or entry.get("lora_name") or "").strip()
+        if not lora_name or lora_name.lower() == "none":
+            continue
+        try:
+            strength = float(entry.get("strength", entry.get("model_strength", 1.0)))
+        except (TypeError, ValueError):
+            raise ValueError(f"Krea2 LoRA stack entry {index + 1} has invalid strength: {entry.get('strength')!r}") from None
+        if strength == 0:
+            continue
+        lora_path = Path(lora_name).expanduser() if os.path.isabs(lora_name) else None
+        if lora_path is None or not lora_path.exists():
+            resolved = folder_paths.get_full_path("loras", lora_name)
+            if not resolved:
+                raise ValueError(f"Krea2 LoRA not found: {lora_name}")
+            lora_path = Path(resolved)
+        active.append({
+            "name": lora_name,
+            "path": str(lora_path),
+            "strength": strength,
+        })
+    return active
+
+
+def _serialize_lora_stack(lora_stack):
+    if isinstance(lora_stack, str):
+        text = lora_stack.strip()
+        if not text:
+            return "[]"
+        json.loads(text)
+        return text
+    if isinstance(lora_stack, list):
+        return json.dumps(lora_stack)
+    return "[]"
+
+
+class Krea2MLXMultiLoRAStack:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_stack": ("STRING", {
+                    "multiline": True,
+                    "default": "[]",
+                    "forceInput": False,
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("KREA2_LORA_STACK",)
+    RETURN_NAMES = ("lora_stack",)
+    FUNCTION = "stack"
+    CATEGORY = "Krea2/MLX"
+
+    def stack(self, lora_stack="[]"):
+        return (_serialize_lora_stack(lora_stack),)
+
+
 class Krea2MLXRedMixSampler:
     @classmethod
     def INPUT_TYPES(cls):
@@ -181,14 +375,18 @@ class Krea2MLXRedMixSampler:
                 "steps": ("INT", {"default": 10, "min": 1, "max": 50}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**64 - 1, "control_after_generate": True}),
                 "num_images": ("INT", {"default": 1, "min": 1, "max": 4}),
-            }
+                "sampler": (["flow_euler", "er_sde"], {"default": "flow_euler"}),
+            },
+            "optional": {
+                "lora_stack": ("KREA2_LORA_STACK",),
+            },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "generate"
     CATEGORY = "Krea2/MLX"
 
-    def generate(self, prompt, width, height, steps, seed, num_images):
+    def generate(self, prompt, width, height, steps, seed, num_images, sampler="flow_euler", lora_stack=None):
         run_start = time.perf_counter()
         last_mark = [run_start]
 
@@ -207,6 +405,7 @@ class Krea2MLXRedMixSampler:
 
         _ensure_sidecar()
         mark("pipeline")
+        active_loras = _parse_lora_stack(lora_stack)
         response = _request_json("/generate", {
             "prompt": str(prompt).strip(),
             "width": int(width),
@@ -214,6 +413,8 @@ class Krea2MLXRedMixSampler:
             "steps": int(steps),
             "seed": int(seed),
             "num_images": int(num_images),
+            "sampler": str(sampler),
+            "loras": active_loras,
             "prefix": "Krea2_RedMix_sidecar",
         }, timeout=max(600, int(steps) * 120))
         mark(f"sidecar_generate timings={response.get('timings')}")
@@ -223,6 +424,8 @@ class Krea2MLXRedMixSampler:
         tensors = _image_paths_to_tensor(paths)
         mark("pil_to_tensor")
         pbar.update_absolute(int(steps), int(steps))
+        if _recycle_sidecar_after_run():
+            _stop_sidecar_listener()
         return (tensors,)
 
 
@@ -252,11 +455,13 @@ class Krea2MLXFreeCache:
 
 
 NODE_CLASS_MAPPINGS = {
+    "Krea2MLXMultiLoRAStack": Krea2MLXMultiLoRAStack,
     "Krea2MLXRedMixSampler": Krea2MLXRedMixSampler,
     "Krea2MLXFreeCache": Krea2MLXFreeCache,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "Krea2MLXMultiLoRAStack": "Krea2 MLX Multi LoRA Stack",
     "Krea2MLXRedMixSampler": "Krea2 Red Mix MLX Sampler",
     "Krea2MLXFreeCache": "Krea2 MLX Free Cache",
 }
