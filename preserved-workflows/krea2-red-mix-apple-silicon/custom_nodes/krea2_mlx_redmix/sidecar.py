@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+os.environ.setdefault("MLX_METAL_FAST_SYNCH", "1")
+
 KREA2_DIR = Path(os.environ.get("KREA2_MLX_DIR", str(Path.home() / "comfy/krea2_alis_mlx_redmix")))
 MFLUX_SITE = Path(os.environ.get(
     "KREA2_MFLUX_SITE_PACKAGES",
@@ -34,6 +36,10 @@ for path in (str(KREA2_DIR), str(MFLUX_SITE)):
 _PIPE = None
 _PIPE_KEY = None
 _PIPE_LOCK = threading.Lock()
+
+
+def _compile_forward_enabled():
+    return os.environ.get("KREA2_MLX_COMPILE_FORWARD", "1").lower() in {"1", "true", "yes", "on"}
 
 
 def _prepare_mlx_runtime(clear_cache=False):
@@ -62,6 +68,13 @@ def _pipeline():
             precision="mxfp8-fused",
             base_dir=os.environ.get("KREA2_BASE_DIR"),
         )
+        if _compile_forward_enabled():
+            import mlx.core as mx
+
+            try:
+                _PIPE.transformer.forward_prepared_vectors = mx.compile(_PIPE.transformer.forward_prepared_vectors)
+            except Exception as exc:
+                print(f"[Krea2MLXSidecar] forward compile disabled after failure: {exc}", flush=True)
         _PIPE_KEY = key
         return _PIPE
 

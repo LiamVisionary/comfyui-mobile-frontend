@@ -102,6 +102,8 @@ def _ensure_sidecar():
             "KREA2_REDMIX_TRANSFORMER": str(TRANSFORMER_PATH),
             "KREA2_MLX_SIDECAR_PORT": str(_SIDECAR_PORT),
             "KREA2_MLX_SIDECAR_OUTPUT_DIR": str(_SIDECAR_OUTPUT_DIR),
+            "MLX_METAL_FAST_SYNCH": os.environ.get("MLX_METAL_FAST_SYNCH", "1"),
+            "KREA2_MLX_COMPILE_FORWARD": os.environ.get("KREA2_MLX_COMPILE_FORWARD", "1"),
         })
         log = open(_SIDECAR_LOG, "ab", buffering=0)
         _SIDECAR_PROC = subprocess.Popen(
