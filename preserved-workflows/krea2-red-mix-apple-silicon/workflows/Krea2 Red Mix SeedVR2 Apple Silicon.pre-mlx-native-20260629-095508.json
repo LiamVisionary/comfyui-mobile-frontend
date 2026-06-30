@@ -469,7 +469,7 @@
         "mps",
         0,
         false,
-        "none",
+        "cpu",
         true,
         "sdpa"
       ]
@@ -521,7 +521,7 @@
         1024,
         128,
         "false",
-        "none",
+        "cpu",
         true
       ]
     },
