@@ -52,7 +52,7 @@ def _prepare_mlx_runtime(clear_cache=False):
         import mlx.core as mx
         info = mx.device_info()
         mx.set_wired_limit(int(info["max_recommended_working_set_size"] * 0.9))
-        mx.set_cache_limit(int(os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "8")) * 1024**3)
+        mx.set_cache_limit(int(os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "0")) * 1024**3)
         if clear_cache:
             mx.clear_cache()
     except Exception:
@@ -104,6 +104,7 @@ def _ensure_sidecar():
             "KREA2_MLX_SIDECAR_OUTPUT_DIR": str(_SIDECAR_OUTPUT_DIR),
             "MLX_METAL_FAST_SYNCH": os.environ.get("MLX_METAL_FAST_SYNCH", "1"),
             "KREA2_MLX_COMPILE_FORWARD": os.environ.get("KREA2_MLX_COMPILE_FORWARD", "1"),
+            "KREA2_MLX_CACHE_LIMIT_GB": os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "0"),
         })
         log = open(_SIDECAR_LOG, "ab", buffering=0)
         _SIDECAR_PROC = subprocess.Popen(

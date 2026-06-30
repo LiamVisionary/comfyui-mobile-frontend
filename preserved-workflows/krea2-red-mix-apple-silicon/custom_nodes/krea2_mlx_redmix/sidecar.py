@@ -47,7 +47,7 @@ def _prepare_mlx_runtime(clear_cache=False):
 
     info = mx.device_info()
     mx.set_wired_limit(int(info["max_recommended_working_set_size"] * 0.9))
-    mx.set_cache_limit(int(os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "8")) * 1024**3)
+    mx.set_cache_limit(int(os.environ.get("KREA2_MLX_CACHE_LIMIT_GB", "0")) * 1024**3)
     if clear_cache:
         mx.clear_cache()
 
@@ -125,9 +125,26 @@ class Handler(BaseHTTPRequestHandler):
             pipe = _pipeline()
             timings["pipeline"] = time.perf_counter() - start
 
+            step_times = []
+            step_mark = [time.perf_counter()]
+
+            def step_callback(step, total):
+                now = time.perf_counter()
+                step_times.append({"step": step, "total": total, "seconds": now - step_mark[0]})
+                step_mark[0] = now
+
             gen_start = time.perf_counter()
-            images = pipe.generate(prompt, width=width, height=height, steps=steps, seed=seed, num_images=num_images)
+            images = pipe.generate(
+                prompt,
+                width=width,
+                height=height,
+                steps=steps,
+                seed=seed,
+                num_images=num_images,
+                step_callback=step_callback,
+            )
             timings["generate"] = time.perf_counter() - gen_start
+            timings["steps"] = step_times
 
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             paths = []

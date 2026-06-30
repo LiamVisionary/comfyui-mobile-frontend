@@ -13,6 +13,7 @@ Runtime source paths:
 The workflow is saved with the current quality-preserving settings: 960x1440, 10 steps, seed `794015397137290`, and the reference-style prompt used for the latest comparison run.
 
 The Comfy node delegates Krea2 generation to a local pure-MLX sidecar on port `8796`.
-The sidecar defaults `MLX_METAL_FAST_SYNCH=1` and `KREA2_MLX_COMPILE_FORWARD=1` to keep the hot transformer pass on the faster Apple Silicon path without changing prompt, model, resolution, or step count.
+The sidecar defaults `MLX_METAL_FAST_SYNCH=1`, `KREA2_MLX_COMPILE_FORWARD=1`, and `KREA2_MLX_CACHE_LIMIT_GB=0` to keep the hot transformer pass on the faster Apple Silicon path without changing prompt, model, resolution, or step count.
+On the saved 960x1440, 10-step, full-prompt workflow, the current sidecar profile reports step timings around 5.3-6.5 seconds and about 60.8 seconds total generation time when warm.
 
 Only source files, workflow JSON, and a small ComfyUI patch are preserved here. Model weights and generated outputs are intentionally excluded.
