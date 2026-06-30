@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const apiMocks = vi.hoisted(() => ({
+  getFileWorkflow: vi.fn(),
+}));
+
+vi.mock('@/api/client', () => ({
+  getFileWorkflow: apiMocks.getFileWorkflow,
+}));
+
 import {
+  isNativeBigLoveKlein3OutputPath,
+  loadWorkflowFromFile,
   resolveFileSource,
   resolveFilePath,
   resolveViewerItemWorkflowLoad,
@@ -11,6 +22,10 @@ import type { ViewerImage } from '../viewerImages';
 function makeFile(id: string): FileItem {
   return { id, name: id.split('/').pop() ?? id, type: 'image' };
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('resolveFileSource', () => {
   it('returns "input" for files starting with input/', () => {
@@ -41,6 +56,60 @@ describe('resolveFilePath', () => {
   it('respects explicit source parameter', () => {
     expect(resolveFilePath(makeFile('input/img.png'), 'output')).toBe('input/img.png');
     expect(resolveFilePath(makeFile('output/img.png'), 'input')).toBe('output/img.png');
+  });
+});
+
+describe('isNativeBigLoveKlein3OutputPath', () => {
+  it('matches native BigLove Klein 3 MLX output filenames', () => {
+    expect(isNativeBigLoveKlein3OutputPath('biglove_klein3_mlx_705ac168d49a.png')).toBe(true);
+    expect(isNativeBigLoveKlein3OutputPath('subdir/biglove_klein3_mlx_ABCDEF123456.png')).toBe(true);
+  });
+
+  it('rejects unrelated output filenames', () => {
+    expect(isNativeBigLoveKlein3OutputPath('biglove_klein3_mlx_preview.png')).toBe(false);
+    expect(isNativeBigLoveKlein3OutputPath('anima_705ac168d49a.png')).toBe(false);
+    expect(isNativeBigLoveKlein3OutputPath('biglove_klein3_mlx_705ac168d49a.jpg')).toBe(false);
+  });
+});
+
+describe('loadWorkflowFromFile', () => {
+  it('loads the exact workflow returned by file metadata', async () => {
+    const workflow = { nodes: [{ id: 1 }], links: [] } as unknown as Workflow;
+    const loadWorkflow = vi.fn();
+    apiMocks.getFileWorkflow.mockResolvedValue(workflow);
+
+    await loadWorkflowFromFile({
+      file: makeFile('output/biglove_klein3_mlx_705ac168d49a.png'),
+      loadWorkflow,
+    });
+
+    expect(apiMocks.getFileWorkflow).toHaveBeenCalledWith(
+      'biglove_klein3_mlx_705ac168d49a.png',
+      'output',
+    );
+    expect(loadWorkflow).toHaveBeenCalledWith(
+      workflow,
+      'biglove_klein3_mlx_705ac168d49a.png',
+      {
+        source: {
+          type: 'file',
+          filePath: 'biglove_klein3_mlx_705ac168d49a.png',
+          assetSource: 'output',
+        },
+      },
+    );
+  });
+
+  it('propagates metadata errors instead of falling back to the current workflow', async () => {
+    const originalError = new Error('Encrypted workflow metadata could not be decrypted');
+    const loadWorkflow = vi.fn();
+    apiMocks.getFileWorkflow.mockRejectedValue(originalError);
+
+    await expect(loadWorkflowFromFile({
+      file: makeFile('output/biglove_klein3_mlx_705ac168d49a.png'),
+      loadWorkflow,
+    })).rejects.toBe(originalError);
+    expect(loadWorkflow).not.toHaveBeenCalled();
   });
 });
 

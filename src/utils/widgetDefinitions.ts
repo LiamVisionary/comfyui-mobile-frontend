@@ -1,6 +1,21 @@
 import type { WorkflowLink, WorkflowNode, NodeTypes, NodeTypeDefinition, Workflow, WorkflowSubgraphLink } from '@/api/types';
-import { getNodePropertyWidgetIndexMap, getWidgetValue, isWidgetInputType, skipImplicitSeedControlSlot } from '@/utils/workflowInputs';
-import { findLoraListIndex, isLoraList, isLoraManagerNodeType, isPowerLoraLoaderNodeType } from '@/utils/loraManager';
+import {
+  DYNAMIC_COMBO_WIDGET_NAME_OPTION,
+  getDynamicComboOptionKeys,
+  getNodePropertyWidgetIndexMap,
+  getWidgetValue,
+  isDynamicComboInput,
+  isWidgetInputType,
+  skipImplicitSeedControlSlot,
+} from '@/utils/workflowInputs';
+import {
+  extractMultiLoraStackList,
+  findLoraListIndex,
+  isLoraList,
+  isLoraManagerNodeType,
+  isMultiLoraStackNodeType,
+  isPowerLoraLoaderNodeType,
+} from '@/utils/loraManager';
 import { modelWidgetKind } from '@/utils/modelWidgetKind';
 import {
   extractTriggerWordList,
@@ -98,6 +113,66 @@ function buildLoraManagerWidgetDefinitions(
   return definitions;
 }
 
+function buildMultiLoraStackWidgetDefinitions(
+  node: WorkflowNode,
+  nodeTypes: NodeTypes | null
+): WidgetDefinition[] {
+  if (!Array.isArray(node.widgets_values)) return [];
+  const listIndex = 0;
+  const rawList = node.widgets_values[listIndex];
+  const list = extractMultiLoraStackList(rawList);
+  if (!list) return [];
+
+  const loraOptions = getStandardLoraOptions(nodeTypes);
+  const loraControlOptions = {
+    choices: loraOptions.length > 0 ? loraOptions : undefined,
+    preserveFileExtension: true,
+  };
+  const definitions: WidgetDefinition[] = [];
+
+  if (list.length > 0) {
+    definitions.push({
+      name: 'Loras',
+      type: 'LM_LORA_HEADER',
+      options: undefined,
+      value: list.every((entry) => entry?.active !== false),
+      widgetIndex: listIndex,
+      isCombo: false,
+      connected: false,
+      inputIndex: -1
+    });
+  }
+
+  list.forEach((entry, index) => {
+    definitions.push({
+      name: entry?.name || 'Lora',
+      type: 'LM_LORA',
+      options: {
+        ...loraControlOptions,
+        entryIndex: index,
+      },
+      value: entry,
+      widgetIndex: listIndex,
+      isCombo: false,
+      connected: false,
+      inputIndex: -1
+    });
+  });
+
+  definitions.push({
+    name: 'Add Lora',
+    type: 'LM_LORA_ADD',
+    options: loraControlOptions,
+    value: null,
+    widgetIndex: listIndex,
+    isCombo: false,
+    connected: false,
+    inputIndex: -1
+  });
+
+  return definitions;
+}
+
 function buildTriggerWordToggleWidgetDefinitions(
   node: WorkflowNode,
   allowStrengthAdjustment: boolean,
@@ -153,6 +228,11 @@ function collectWidgetDefinitions(
         connected: false,
         inputIndex: -1
       }];
+    }
+
+    if (isMultiLoraStackNodeType(node.type)) {
+      const multiLoraDefs = buildMultiLoraStackWidgetDefinitions(node, nodeTypes);
+      if (multiLoraDefs.length > 0) return multiLoraDefs;
     }
 
     // Handle Power Lora Loader (rgthree) specially
@@ -284,9 +364,18 @@ function collectWidgetDefinitions(
       const hasSocket = Boolean(inputEntry);
       const hasDefault = Object.prototype.hasOwnProperty.call(inputOptions ?? {}, 'default');
       const isWidgetType = isWidgetInputType(typeOrOptions) || isWidgetToggle || !hasSocket || hasDefault;
-      const isCombo = Array.isArray(typeOrOptions) && !isAutocompleteTextInput;
+      const dynamicComboOptions = isDynamicComboInput(typeOrOptions, inputOptions)
+        ? getDynamicComboOptionKeys(inputOptions)
+        : [];
+      const isCombo = (Array.isArray(typeOrOptions) || dynamicComboOptions.length > 0) && !isAutocompleteTextInput;
       const comboOptions: Record<string, unknown> = isCombo
-        ? { ...(inputOptions ?? {}), options: typeOrOptions }
+        ? {
+            ...(inputOptions ?? {}),
+            options: dynamicComboOptions.length > 0 ? dynamicComboOptions : typeOrOptions,
+            ...(dynamicComboOptions.length > 0
+              ? { [DYNAMIC_COMBO_WIDGET_NAME_OPTION]: name }
+              : {}),
+          }
         : { ...(inputOptions ?? {}) };
       if (isAutocompleteTextInput) {
         comboOptions.multiline = true;
@@ -308,7 +397,11 @@ function collectWidgetDefinitions(
 
       if (isWidgetType) {
         widgetIndex += 1;
-        if (String(typeOrOptions) === 'INT' && (name === 'seed' || name === 'noise_seed')) {
+        if (
+          String(typeOrOptions) === 'INT' &&
+          (name === 'seed' || name === 'noise_seed') &&
+          node.type !== 'PromptAssistantGenerate'
+        ) {
           // ComfyUI auto-adds a control_after_generate widget after every INT
           // seed input. Some custom nodes (Efficient KSampler family) strip it
           // on the JS side, so widgets_values may be one slot shorter — or

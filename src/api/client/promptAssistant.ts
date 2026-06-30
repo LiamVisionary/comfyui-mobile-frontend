@@ -15,6 +15,16 @@ export interface PromptAssistantGenerateRequest {
     data_url: string;
     name?: string;
   };
+  active_loras?: PromptAssistantActiveLora[];
+}
+
+export interface PromptAssistantActiveLora {
+  name: string;
+  strength?: number | string;
+  active?: boolean;
+  node_id?: number;
+  node_title?: string;
+  node_type?: string;
 }
 
 export interface PromptAssistantGenerateResponse {

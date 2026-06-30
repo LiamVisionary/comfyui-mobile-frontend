@@ -5,7 +5,12 @@ import { ModelComboControl } from "./ModelComboControl";
 import { FullscreenWidgetModal } from "../modals/FullscreenWidgetModal";
 import { useState } from "react";
 import { PlusIcon, WarningTriangleIcon } from "../icons";
-import { createDefaultLoraEntry, normalizeLoraEntry } from "@/utils/loraManager";
+import {
+  createDefaultLoraEntry,
+  createDefaultLoraStackEntry,
+  normalizeLoraEntry,
+  normalizeLoraStackEntry,
+} from "@/utils/loraManager";
 import { normalizeTriggerWordEntry } from "@/utils/triggerWordToggle";
 import { modelWidgetKind } from "@/utils/modelWidgetKind";
 import type { LoraManagerPrefix } from "@/api/loraManagerClient";
@@ -182,7 +187,12 @@ export function WidgetControl({
   }
 
   if (type === "LM_LORA") {
-    const loraValue = normalizeLoraEntry(
+    const loraOptions = (options as { choices?: unknown[]; preserveFileExtension?: boolean }) || {};
+    const preserveFileExtension = Boolean(loraOptions.preserveFileExtension);
+    const normalizeEntry = preserveFileExtension
+      ? normalizeLoraStackEntry
+      : normalizeLoraEntry;
+    const loraValue = normalizeEntry(
       (value as {
         name: string;
         strength: number | string;
@@ -198,7 +208,6 @@ export function WidgetControl({
         expanded: false,
       },
     );
-    const loraOptions = (options as { choices?: unknown[] }) || {};
     const choices = Array.isArray(loraOptions.choices)
       ? loraOptions.choices.map((choice) => String(choice))
       : [];
@@ -327,9 +336,13 @@ export function WidgetControl({
   }
 
   if (type === "LM_LORA_ADD") {
-    const loraOptions = (options as { choices?: unknown[] }) || {};
+    const loraOptions = (options as { choices?: unknown[]; preserveFileExtension?: boolean }) || {};
     const handleLoraAddClick = () => {
-      onChange(createDefaultLoraEntry(loraOptions.choices));
+      onChange(
+        loraOptions.preserveFileExtension
+          ? createDefaultLoraStackEntry(loraOptions.choices)
+          : createDefaultLoraEntry(loraOptions.choices)
+      );
     };
 
     return (

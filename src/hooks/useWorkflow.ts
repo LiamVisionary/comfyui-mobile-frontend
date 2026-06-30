@@ -30,15 +30,23 @@ import {
 } from "@/utils/inputPathAliases";
 import {
   applyBypassedRegionalPromptFallbacks,
+  applyPromptAssistantForgeCoupleQueueAutomation,
   buildWorkflowPromptInputs,
+  getComboComparableValue,
+  getDynamicComboOptionKeys,
   getNodeWidgetIndexMap,
   getWidgetValue,
+  isDynamicComboInput,
+  normalizeDynamicComboInputValue,
   normalizeWidgetValue,
   resolveComboOption,
 } from "@/utils/workflowInputs";
 import { buildWorkflowCacheKey } from "@/utils/workflowCacheKey";
 import { collectAllWorkflowGroups, collectAllWorkflowNodes } from "@/utils/workflowNodes";
-import { isPowerLoraLoaderNodeType } from "@/utils/loraManager";
+import {
+  isMultiLoraStackNodeType,
+  isPowerLoraLoaderNodeType,
+} from "@/utils/loraManager";
 import { userScrolledSince } from "@/utils/scrollInterrupt";
 import { addInputFileOptionToNodeTypes } from "@/utils/nodeTypeOptions";
 import { createThrottledPersistStorage } from "@/utils/idbStorage";
@@ -149,6 +157,11 @@ import {
   isWorkflowHidden,
 } from "@/utils/workflowHidden";
 import { encryptWorkflowForStorage } from "@/utils/workflowEncryption";
+import {
+  BIGLOVE_KLEIN3_MLX_TEST_FILENAME,
+  repairBigLoveKlein3MlxComfyLoraStack,
+  repairBigLoveKlein3MlxLoraStack,
+} from "@/utils/bigLoveKleinLoraMigration";
 
 // ScopeFrame is defined in canonicalWorkflowOps.ts and re-exported here.
 export type { ScopeFrame };
@@ -218,6 +231,51 @@ function buildLayoutForWorkflow(
     workflow,
     hiddenItems,
   );
+}
+
+function clearHiddenStateForMultiLoraStackNodes(
+  workflow: Workflow,
+  hiddenItems: Record<string, boolean> | undefined,
+): Record<string, boolean> {
+  if (!hiddenItems) return {};
+
+  let changed = false;
+  const next = { ...hiddenItems };
+
+  const clearNode = (node: WorkflowNode, subgraphId: string | null) => {
+    if (!isMultiLoraStackNodeType(node.type)) return;
+
+    const keys = new Set<string>([
+      String(node.id),
+      makeLocationPointer({ type: "node", nodeId: node.id, subgraphId }),
+      subgraphId == null
+        ? `root:node:${node.id}`
+        : `subgraph:${subgraphId}:node:${node.id}`,
+      ...collectNodeStateKeys(workflow, node.id, subgraphId),
+    ]);
+    if (typeof node.itemKey === "string" && node.itemKey.trim()) {
+      keys.add(node.itemKey);
+    }
+
+    for (const key of keys) {
+      if (next[key]) {
+        delete next[key];
+        changed = true;
+      }
+    }
+  };
+
+  for (const node of workflow.nodes ?? []) {
+    clearNode(node, null);
+  }
+
+  for (const subgraph of workflow.definitions?.subgraphs ?? []) {
+    for (const node of subgraph.nodes ?? []) {
+      clearNode(node, subgraph.id);
+    }
+  }
+
+  return changed ? next : hiddenItems;
 }
 
 
@@ -1013,9 +1071,13 @@ function collectWorkflowLoadErrors(
         typeDef.input.required?.[name] || typeDef.input.optional?.[name];
       if (!inputDef) continue;
 
-      const [typeOrOptions] = inputDef;
-      if (!Array.isArray(typeOrOptions)) continue;
-      if (typeOrOptions.length === 0) continue;
+      const [typeOrOptions, inputOptions] = inputDef;
+      const comboOptions = Array.isArray(typeOrOptions)
+        ? typeOrOptions
+        : isDynamicComboInput(typeOrOptions, inputOptions)
+          ? getDynamicComboOptionKeys(inputOptions)
+          : null;
+      if (!comboOptions || comboOptions.length === 0) continue;
 
       const inputEntry = node.inputs.find((input) => input.name === name);
       if (inputEntry?.link != null) continue;
@@ -1031,8 +1093,9 @@ function collectWorkflowLoadErrors(
       const rawValue = getWidgetValue(node, name, widgetIndex);
       if (rawValue === undefined || rawValue === null) continue;
 
-      const resolved = resolveComboOption(rawValue, typeOrOptions);
-      const normalized = normalizeWidgetValue(rawValue, typeOrOptions, {
+      const resolved = resolveComboOption(rawValue, comboOptions, name);
+      const comparableValue = getComboComparableValue(rawValue, name);
+      const normalized = normalizeWidgetValue(comparableValue, comboOptions, {
         comboIndexToValue: true,
       });
       const normalizedString = String(normalized);
@@ -1040,7 +1103,7 @@ function collectWorkflowLoadErrors(
         normalizedString.split(/[\\/]/).pop() ?? normalizedString;
       const hasMatch =
         resolved !== undefined ||
-        typeOrOptions.some((opt) => {
+        comboOptions.some((opt) => {
           const optString = String(opt);
           return optString === normalizedString || optString === normalizedBase;
         });
@@ -1082,8 +1145,14 @@ function normalizeWorkflowComboValues(
     for (const name of orderedInputs) {
       const inputDef = typeDef.input.required?.[name] || typeDef.input.optional?.[name];
       if (!inputDef) continue;
-      const [typeOrOptions] = inputDef;
-      if (!Array.isArray(typeOrOptions) || typeOrOptions.length === 0) continue;
+      const [typeOrOptions, inputOptions] = inputDef;
+      const isDynamicCombo = isDynamicComboInput(typeOrOptions, inputOptions);
+      const comboOptions = Array.isArray(typeOrOptions)
+        ? typeOrOptions
+        : isDynamicCombo
+          ? getDynamicComboOptionKeys(inputOptions)
+          : null;
+      if (!comboOptions || comboOptions.length === 0) continue;
 
       const inputEntry = node.inputs.find((input) => input.name === name);
       if (inputEntry?.link != null) continue;
@@ -1095,7 +1164,22 @@ function normalizeWorkflowComboValues(
       const rawValue = getWidgetValue(node, name, widgetIndex);
       if (rawValue === undefined || rawValue === null) continue;
 
-      const resolved = resolveComboOption(rawValue, typeOrOptions);
+      const resolved = resolveComboOption(rawValue, comboOptions, name);
+      if (isDynamicCombo) {
+        const nextDynamicValue = normalizeDynamicComboInputValue(
+          resolved === undefined ? comboOptions[0] : rawValue,
+          name,
+        );
+        if (JSON.stringify(nextDynamicValue) === JSON.stringify(rawValue)) continue;
+
+        if (!nextValues) {
+          nextValues = [...node.widgets_values];
+        }
+        nextValues[widgetIndex] = nextDynamicValue;
+        changed = true;
+        continue;
+      }
+
       if (resolved === undefined || resolved === rawValue) continue;
 
       if (!nextValues) {
@@ -1124,6 +1208,7 @@ function normalizeWorkflowComboValues(
 type SessionNormalizable = {
   workflow: Workflow | null;
   originalWorkflow: Workflow | null;
+  currentFilename?: string | null;
   mobileLayout: MobileLayout;
   itemKeyByPointer: Record<string, string>;
   pointerByHierarchicalKey: Record<string, string>;
@@ -1231,6 +1316,26 @@ function normalizeSessionInPlace(
     s.itemKeyByPointer = {};
     s.pointerByHierarchicalKey = {};
     return savedWorkflowStates;
+  }
+  const bigLoveComfyLoraMigration = repairBigLoveKlein3MlxComfyLoraStack(
+    s.workflow,
+    s.currentFilename,
+  );
+  if (bigLoveComfyLoraMigration.changed) {
+    s.workflow = bigLoveComfyLoraMigration.workflow;
+    s.hiddenItems = clearHiddenStateForMultiLoraStackNodes(
+      s.workflow,
+      s.hiddenItems ?? {},
+    );
+  }
+  if (s.originalWorkflow) {
+    const originalMigration = repairBigLoveKlein3MlxComfyLoraStack(
+      s.originalWorkflow,
+      s.currentFilename,
+    );
+    if (originalMigration.changed) {
+      s.originalWorkflow = originalMigration.workflow;
+    }
   }
   const normalizedWorkflow = canonicalizeWorkflowHierarchicalKeys(
     s.workflow,
@@ -3363,8 +3468,31 @@ export const useWorkflowStore = create<WorkflowState>()(
                 ...options,
                 filePrefixAliasesResolved: true,
               });
-            });
+          });
           return;
+        }
+
+        const bigLoveLoraMigration = repairBigLoveKlein3MlxLoraStack(workflow, filename);
+        if (bigLoveLoraMigration.changed) {
+          workflow = bigLoveLoraMigration.workflow;
+          options = { ...options, fresh: true };
+          if (filename) {
+            const workflowForPersistence = validateAndNormalizeWorkflow(
+              stripWorkflowClientMetadata(bigLoveLoraMigration.workflow),
+            );
+            void api.saveUserWorkflow(filename, workflowForPersistence)
+              .then(() => {
+                console.info(
+                  `${BIGLOVE_KLEIN3_MLX_TEST_FILENAME}: repaired encrypted MFlux LoRA stack and saved it back to the workflow file.`,
+                );
+              })
+              .catch((error) => {
+                console.error(
+                  `${BIGLOVE_KLEIN3_MLX_TEST_FILENAME}: failed to persist repaired MFlux LoRA stack:`,
+                  error,
+                );
+              });
+          }
         }
 
         // Session bookkeeping: decide whether this load opens a new tab or
@@ -3511,16 +3639,22 @@ export const useWorkflowStore = create<WorkflowState>()(
             ? normalizeWorkflowComboValues(canonicalWorkflow, nodeTypes)
             : { workflow: canonicalWorkflow, changed: false };
           finalWorkflow = normalizedResult.workflow;
-          const normalizedHiddenNodes = normalizeManuallyHiddenNodeKeys(
+          const normalizedHiddenNodes = clearHiddenStateForMultiLoraStackNodes(
             finalWorkflow,
-            get().hiddenItems,
+            normalizeManuallyHiddenNodeKeys(
+              finalWorkflow,
+              get().hiddenItems,
+            ),
           );
           const rawCollapsedItems = {
             ...(savedState.collapsedItems ?? {}),
           };
-          const rawHiddenItems = {
-            ...(savedState.hiddenItems ?? {}),
-          };
+          const rawHiddenItems = clearHiddenStateForMultiLoraStackNodes(
+            finalWorkflow,
+            {
+              ...(savedState.hiddenItems ?? {}),
+            },
+          );
           const restoredLayout = buildLayoutForWorkflow(
             finalWorkflow,
             normalizedHiddenNodes,
@@ -3551,13 +3685,16 @@ export const useWorkflowStore = create<WorkflowState>()(
             reconciled.layoutToStable,
             reconciled.stableToLayout,
           );
-          const restoredHiddenItems = normalizePointerBooleanRecord(
-            {
-              ...rawHiddenItems,
-              ...normalizedHiddenItemsStable,
-            },
-            reconciled.layoutToStable,
-            reconciled.stableToLayout,
+          const restoredHiddenItems = clearHiddenStateForMultiLoraStackNodes(
+            finalWorkflow,
+            normalizePointerBooleanRecord(
+              {
+                ...rawHiddenItems,
+                ...normalizedHiddenItemsStable,
+              },
+              reconciled.layoutToStable,
+              reconciled.stableToLayout,
+            ),
           );
           const defaultCollapsedItems: Record<string, boolean> = {};
           const restoredWorkflowWithHierarchicalKeys = annotateWorkflowWithHierarchicalKeys(
@@ -3565,6 +3702,13 @@ export const useWorkflowStore = create<WorkflowState>()(
             reconciled.layoutToStable,
           );
           finalWorkflow = restoredWorkflowWithHierarchicalKeys;
+          const finalHiddenItems = clearHiddenStateForMultiLoraStackNodes(
+            restoredWorkflowWithHierarchicalKeys,
+            {
+              ...restoredHiddenItems,
+              ...normalizedHiddenNodesStable,
+            },
+          );
 
           set({
             workflowSource: source,
@@ -3581,10 +3725,7 @@ export const useWorkflowStore = create<WorkflowState>()(
               ...defaultCollapsedItems,
               ...restoredCollapsedItems,
             },
-            hiddenItems: {
-              ...restoredHiddenItems,
-              ...normalizedHiddenNodesStable,
-            },
+            hiddenItems: finalHiddenItems,
             mobileLayout: restoredLayout,
             itemKeyByPointer: reconciled.layoutToStable,
             pointerByHierarchicalKey: reconciled.stableToLayout,
@@ -3616,9 +3757,12 @@ export const useWorkflowStore = create<WorkflowState>()(
           const currentState = get();
           const shouldCarryFoldState =
             currentState.currentWorkflowKey === workflowKey;
-          const normalizedHiddenNodes = normalizeManuallyHiddenNodeKeys(
+          const normalizedHiddenNodes = clearHiddenStateForMultiLoraStackNodes(
             canonicalWorkflow,
-            get().hiddenItems,
+            normalizeManuallyHiddenNodeKeys(
+              canonicalWorkflow,
+              get().hiddenItems,
+            ),
           );
           const nextLayout = buildLayoutForWorkflow(
             canonicalWorkflow,
@@ -3651,6 +3795,10 @@ export const useWorkflowStore = create<WorkflowState>()(
               finalWorkflow,
               reconciled.layoutToStable,
             );
+          const finalHiddenItems = clearHiddenStateForMultiLoraStackNodes(
+            normalizedWorkflowWithHierarchicalKeys,
+            normalizedHiddenNodesStable,
+          );
           set({
             workflowSource: source,
             workflow: normalizedWorkflowWithHierarchicalKeys,
@@ -3669,7 +3817,7 @@ export const useWorkflowStore = create<WorkflowState>()(
             mobileLayout: nextLayout,
             itemKeyByPointer: reconciled.layoutToStable,
             pointerByHierarchicalKey: reconciled.stableToLayout,
-            hiddenItems: normalizedHiddenNodesStable,
+            hiddenItems: finalHiddenItems,
             runCount: 1,
             infiniteLoop: false,
             // Keep the loop owner's armed-but-not-run guard while a loop is
@@ -5225,6 +5373,12 @@ export const useWorkflowStore = create<WorkflowState>()(
             };
             writeSeedLastValues(nextSeedLastValues);
             writeWorkflow(currentWorkflow);
+
+            const regionalAutomation = applyPromptAssistantForgeCoupleQueueAutomation(currentWorkflow);
+            if (regionalAutomation.changed) {
+              currentWorkflow = regionalAutomation.workflow;
+              writeWorkflow(currentWorkflow);
+            }
 
             // Expand JIT for prompt building (one-way, ephemeral — no sync-back needed).
             // promptKeyMap maps each expanded node's numeric ID to its hierarchical

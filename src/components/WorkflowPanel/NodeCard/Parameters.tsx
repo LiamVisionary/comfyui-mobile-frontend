@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { Collapsible } from '@/components/Collapsible';
 import { FoldIcon } from '@/components/FoldIcon';
 import { WidgetControl } from '../../InputControls/WidgetControl';
@@ -29,11 +29,17 @@ import { useSeedStore } from '@/hooks/useSeed';
 import {
   applyLoraValuesToText,
   createDefaultLoraEntry,
+  createDefaultLoraStackEntry,
+  extractActiveLoraReferencesFromWorkflow,
+  extractMultiLoraStackList,
   extractLoraList,
   findLoraListIndex,
   isLoraManagerNodeType,
+  isMultiLoraStackNodeType,
   mergeLoras,
-  normalizeLoraEntry
+  normalizeLoraEntry,
+  normalizeLoraStackEntry,
+  serializeMultiLoraStackList
 } from '@/utils/loraManager';
 import {
   buildTriggerWordListFromMessage,
@@ -45,6 +51,22 @@ import {
   isTriggerWordToggleNodeType,
   normalizeTriggerWordEntry
 } from '@/utils/triggerWordToggle';
+import {
+  buildPromptAssistantReferenceImageStorageKey,
+  deletePromptAssistantReferenceImage,
+  getPromptAssistantReferenceImageRestoreErrorMessage,
+  loadPromptAssistantReferenceImage,
+  savePromptAssistantReferenceImage,
+} from '@/utils/promptAssistantReferenceImageStorage';
+import {
+  applyPromptAssistantForgeCoupleAutomation,
+  normalizePromptAssistantHelperMode,
+  normalizePromptAssistantProfileJsonOverride,
+} from '@/utils/workflowInputs';
+import {
+  isWorkflowEncryptionUnlocked,
+  subscribeWorkflowEncryptionStatus,
+} from '@/utils/workflowEncryption';
 import { FastGroupsBypasserControls } from './FastGroupsBypasserControls';
 
 interface WidgetDescriptor {
@@ -163,6 +185,9 @@ export function NodeCardParameters({
   const widgetValues = Array.isArray(node.widgets_values) ? node.widgets_values : [];
   const nodeTypes = useWorkflowStore((state) => state.nodeTypes);
   const workflow = useWorkflowStore((state) => state.workflow);
+  const currentFilename = useWorkflowStore((state) => state.currentFilename);
+  const currentWorkflowKey = useWorkflowStore((state) => state.currentWorkflowKey);
+  const activeSessionId = useWorkflowStore((state) => state.activeSessionId);
   const scopeStack = useWorkflowStore((state) => state.scopeStack);
   const syncTriggerWordsForNode = useLoraManagerStore((state) => state.syncTriggerWordsForNode);
   const storedSeedMode = useSeedStore((state) => state.seedModes[node.id]);
@@ -170,6 +195,7 @@ export function NodeCardParameters({
   const isFastGroupsBypasser = /fast\s+groups/i.test(node.type) && /\(rgthree\)/i.test(node.type);
   const isRgthreeSeedNode = node.type === RGTHREE_SEED_NODE_TYPE;
   const isCrLoraStackNode = /cr\s*lora\s*stack/i.test(node.type);
+  const isMultiLoraStackNode = isMultiLoraStackNodeType(node.type);
   const isPromptAssistantNode = node.type === 'PromptAssistantGenerate';
   // Per-lora fold state for CR-LoRA-Stack-style nodes, keyed by lora group index.
   // Default (absent / false) is unfolded so all controls show until collapsed.
@@ -181,6 +207,9 @@ export function NodeCardParameters({
   const [promptAssistantReferenceImage, setPromptAssistantReferenceImage] =
     useState<PromptAssistantReferenceImage | null>(null);
   const [promptAssistantImageLoading, setPromptAssistantImageLoading] = useState(false);
+  const [promptAssistantImageError, setPromptAssistantImageError] = useState<string | null>(null);
+  const [workflowEncryptionUnlocked, setWorkflowEncryptionUnlocked] =
+    useState(() => isWorkflowEncryptionUnlocked());
   const toggleLoraFold = (index: number) =>
     setFoldedLoras((prev) => ({ ...prev, [index]: !prev[index] }));
   const isLoraManagerNode = isLoraManagerNodeType(node.type);
@@ -222,6 +251,52 @@ export function NodeCardParameters({
   }, [inputWidgetsToRender, isPromptAssistantNode, promptAssistantFinalWidgetNames, widgetsToRender]);
   const promptAssistantPromptWidget = promptAssistantFinalWidgets.find((widget) => widget.name === 'prompt') ?? null;
   const promptAssistantNegativeWidget = promptAssistantFinalWidgets.find((widget) => widget.name === 'negative_prompt') ?? null;
+  const promptAssistantReferenceImageStorageKey = useMemo(() => {
+    if (!isPromptAssistantNode) return '';
+    return buildPromptAssistantReferenceImageStorageKey({
+      workflowFilename: currentFilename,
+      workflowKey: currentWorkflowKey,
+      activeSessionId,
+      nodeKey: node.itemKey || node.id,
+    });
+  }, [activeSessionId, currentFilename, currentWorkflowKey, isPromptAssistantNode, node.id, node.itemKey]);
+  useEffect(() => {
+    if (!isPromptAssistantNode) return undefined;
+    const updateUnlockState = () => {
+      setWorkflowEncryptionUnlocked(isWorkflowEncryptionUnlocked());
+    };
+    updateUnlockState();
+    return subscribeWorkflowEncryptionStatus(updateUnlockState);
+  }, [isPromptAssistantNode]);
+  useEffect(() => {
+    if (!promptAssistantReferenceImageStorageKey) return undefined;
+    if (!workflowEncryptionUnlocked) {
+      setPromptAssistantReferenceImage(null);
+      setPromptAssistantImageError(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setPromptAssistantReferenceImage(null);
+    setPromptAssistantImageError(null);
+    void loadPromptAssistantReferenceImage(promptAssistantReferenceImageStorageKey)
+      .then((image) => {
+        if (!cancelled && image) {
+          setPromptAssistantReferenceImage(image);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const restoreMessage = getPromptAssistantReferenceImageRestoreErrorMessage(
+            error,
+            isWorkflowEncryptionUnlocked(),
+          );
+          setPromptAssistantImageError(restoreMessage);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [promptAssistantReferenceImageStorageKey, workflowEncryptionUnlocked]);
   const displayedInputWidgets = isPromptAssistantNode
     ? inputWidgetsToRender.filter((widget) =>
         !promptAssistantFinalWidgetNames.has(widget.name) &&
@@ -314,6 +389,13 @@ export function NodeCardParameters({
   };
 
   const updateLoraManagerList = (listIndex: number, nextList: unknown[]) => {
+    if (isMultiLoraStackNode) {
+      onUpdateNodeWidgets({
+        [listIndex]: serializeMultiLoraStackList(nextList as Parameters<typeof serializeMultiLoraStackList>[0])
+      });
+      return;
+    }
+
     const updates: Record<number, unknown> = { [listIndex]: nextList };
     if (workflow && nodeTypes) {
       const textIndex = getWidgetIndexForInput('text');
@@ -333,6 +415,9 @@ export function NodeCardParameters({
   const getCurrentLoraList = (listIndex: number) => {
     if (!Array.isArray(node.widgets_values)) return [];
     const rawValue = node.widgets_values[listIndex];
+    if (isMultiLoraStackNode) {
+      return extractMultiLoraStackList(rawValue) ?? [];
+    }
     return extractLoraList(rawValue) ?? [];
   };
 
@@ -528,7 +613,8 @@ export function NodeCardParameters({
       }
       if (typeof newValue === 'object' && newValue) {
         const nextList = [...currentList];
-        nextList[entryIndex] = normalizeLoraEntry({
+        const normalizeEntry = isMultiLoraStackNode ? normalizeLoraStackEntry : normalizeLoraEntry;
+        nextList[entryIndex] = normalizeEntry({
           ...nextList[entryIndex],
           ...(newValue as Record<string, unknown>)
         } as { name: string; strength: number | string });
@@ -540,9 +626,14 @@ export function NodeCardParameters({
     if (widget.type === 'LM_LORA_ADD') {
       const listIndex = widget.widgetIndex;
       const currentList = getCurrentLoraList(listIndex);
+      const choices = (widget.options as { choices?: unknown[] } | undefined)?.choices;
       const entry = typeof newValue === 'object' && newValue
-        ? normalizeLoraEntry(newValue as { name: string; strength: number | string })
-        : createDefaultLoraEntry((widget.options as { choices?: unknown[] } | undefined)?.choices);
+        ? (isMultiLoraStackNode
+            ? normalizeLoraStackEntry(newValue as { name: string; strength: number | string })
+            : normalizeLoraEntry(newValue as { name: string; strength: number | string }))
+        : (isMultiLoraStackNode
+            ? createDefaultLoraStackEntry(choices)
+            : createDefaultLoraEntry(choices));
       updateLoraManagerList(listIndex, [...currentList, entry]);
       return;
     }
@@ -692,13 +783,12 @@ export function NodeCardParameters({
       return Number.isFinite(value) ? value : fallback;
     };
 
-    return {
+    const request: PromptAssistantGenerateRequest = {
       idea: asString('idea'),
       profile: asString('profile', 'swarm_booru_tags') || 'swarm_booru_tags',
       timeout_seconds: asNumber('timeout_seconds', 60),
       seed: Math.trunc(asNumber('seed', -1)),
-      profile_json_override: asString('profile_json_override'),
-      helper_mode: asString('helper_mode', 'None') || 'None',
+      helper_mode: normalizePromptAssistantHelperMode(asString('helper_mode', 'None')),
       negative_prompt: asString('negative_prompt'),
       reference_image: promptAssistantReferenceImage
         ? {
@@ -706,7 +796,15 @@ export function NodeCardParameters({
             name: promptAssistantReferenceImage.name,
           }
         : undefined,
+      active_loras: extractActiveLoraReferencesFromWorkflow(currentWorkflow),
     };
+    const profileJsonOverride = normalizePromptAssistantProfileJsonOverride(
+      asString('profile_json_override'),
+    );
+    if (profileJsonOverride) {
+      request.profile_json_override = profileJsonOverride;
+    }
+    return request;
   };
 
   const handlePromptAssistantReferenceImageChange = async (
@@ -717,13 +815,40 @@ export function NodeCardParameters({
     if (!file) return;
 
     setPromptAssistantImageLoading(true);
-    setPromptAssistantError(null);
+    setPromptAssistantImageError(null);
     try {
-      setPromptAssistantReferenceImage(await preparePromptAssistantReferenceImage(file));
+      const image = await preparePromptAssistantReferenceImage(file);
+      setPromptAssistantReferenceImage(image);
+      if (promptAssistantReferenceImageStorageKey) {
+        try {
+          await savePromptAssistantReferenceImage(promptAssistantReferenceImageStorageKey, image);
+        } catch (error) {
+          setPromptAssistantImageError(
+            error instanceof Error
+              ? `Reference image loaded but was not saved for reload: ${error.message}`
+              : 'Reference image loaded but was not saved for reload',
+          );
+        }
+      }
     } catch (error) {
-      setPromptAssistantError(error instanceof Error ? error.message : 'Image upload failed');
+      setPromptAssistantImageError(error instanceof Error ? error.message : 'Image upload failed');
     } finally {
       setPromptAssistantImageLoading(false);
+    }
+  };
+
+  const handlePromptAssistantRemoveReferenceImage = async () => {
+    setPromptAssistantReferenceImage(null);
+    setPromptAssistantImageError(null);
+    if (!promptAssistantReferenceImageStorageKey) return;
+    try {
+      await deletePromptAssistantReferenceImage(promptAssistantReferenceImageStorageKey);
+    } catch (error) {
+      setPromptAssistantImageError(
+        error instanceof Error
+          ? `Reference image removed here, but saved copy cleanup failed: ${error.message}`
+          : 'Reference image removed here, but saved copy cleanup failed',
+      );
     }
   };
 
@@ -738,8 +863,18 @@ export function NodeCardParameters({
       if (promptAssistantPromptWidget) {
         onUpdateNodeWidget(promptAssistantPromptWidget.widgetIndex, result.prompt, 'prompt');
       }
-      if (promptAssistantNegativeWidget && result.negative_prompt.trim()) {
+      if (promptAssistantNegativeWidget) {
         onUpdateNodeWidget(promptAssistantNegativeWidget.widgetIndex, result.negative_prompt, 'negative_prompt');
+      }
+      const latestWorkflow = useWorkflowStore.getState().workflow;
+      const automation = applyPromptAssistantForgeCoupleAutomation(
+        latestWorkflow,
+        node,
+        result.prompt,
+        request.helper_mode,
+      );
+      if (automation) {
+        useWorkflowStore.setState({ workflow: automation.workflow });
       }
       setPromptAssistantResult(result);
     } catch (error) {
@@ -1093,7 +1228,7 @@ export function NodeCardParameters({
                     <button
                       type="button"
                       className="py-2 px-3 rounded-lg border border-slate-600/80 bg-slate-950/40 text-sm font-medium text-slate-200 transition-colors hover:border-red-300/70 hover:text-red-100"
-                      onClick={() => setPromptAssistantReferenceImage(null)}
+                      onClick={() => { void handlePromptAssistantRemoveReferenceImage(); }}
                       disabled={isBypassed || promptAssistantLoading}
                     >
                       Remove
@@ -1110,6 +1245,11 @@ export function NodeCardParameters({
                     <div className="min-w-0 flex-1 text-xs text-slate-300 truncate">
                       {promptAssistantReferenceImage.name}
                     </div>
+                  </div>
+                )}
+                {promptAssistantImageError && (
+                  <div className="text-xs text-red-300 break-words">
+                    {promptAssistantImageError}
                   </div>
                 )}
               </div>
@@ -1139,7 +1279,7 @@ export function NodeCardParameters({
                   {promptAssistantFinalWidgets.map((widget) => (
                     <WidgetControl
                       key={getWidgetKey(widget, 'prompt-assistant-final-widget')}
-                      name={widget.name === 'prompt' ? 'Final prompt' : 'Final negative'}
+                      name={widget.name === 'prompt' ? 'Final positive prompt' : 'Final negative prompt'}
                       type={widget.type}
                       value={widget.value}
                       options={widget.options}

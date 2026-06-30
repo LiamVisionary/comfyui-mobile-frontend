@@ -5,6 +5,7 @@ import { useWorkflowStore, MAX_WORKFLOW_SESSIONS, reconcileRehydratedSessions } 
 import { useSeedStore } from '../useSeed';
 import { useWorkflowErrorsStore } from '../useWorkflowErrors';
 import { useQueueStore } from '../useQueue';
+import { clearWorkflowEncryptionKey, setWorkflowEncryptionKey } from '@/utils/workflowEncryption';
 
 const anyNodeTypes: NodeTypes = {
   Any: {
@@ -54,6 +55,7 @@ function makeWorkflow(nodes: WorkflowNode[]): Workflow {
 }
 
 beforeEach(() => {
+  setWorkflowEncryptionKey('vitest-workflow-unlock');
   useWorkflowStore.setState({
     workflow: null,
     originalWorkflow: null,
@@ -94,6 +96,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearWorkflowEncryptionKey();
   vi.unstubAllGlobals();
 });
 

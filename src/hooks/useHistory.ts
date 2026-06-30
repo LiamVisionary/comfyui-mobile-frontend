@@ -103,12 +103,23 @@ const historyFetchInFlight = new Map<number, Promise<void>>();
 // an item cleared) flips the signature and the full rebuild runs as before.
 const lastRawHistorySignatures = new Map<number, string>();
 
-function rawHistorySignature(data: Record<string, { status?: { status_str?: string; completed?: boolean }; outputs?: Record<string, unknown> }>): string {
+function rawHistorySignature(
+  data: Record<string, { status?: { status_str?: string; completed?: boolean }; outputs?: Record<string, unknown> }>,
+  promptWorkflows: Record<string, unknown> = {},
+): string {
   const parts: string[] = [];
   for (const id of Object.keys(data)) {
     const item = data[id];
     const status = item.status;
     const completed = status?.completed === false ? 0 : 1;
+    const promptTuple = Array.isArray((item as { prompt?: unknown }).prompt)
+      ? (item as { prompt: unknown[] }).prompt
+      : [];
+    const extraData = promptTuple[3] && typeof promptTuple[3] === 'object' && !Array.isArray(promptTuple[3])
+      ? promptTuple[3] as { extra_pnginfo?: { workflow?: unknown } }
+      : {};
+    const hasWorkflow = Boolean(extraData.extra_pnginfo?.workflow);
+    const hasLocalWorkflow = Object.prototype.hasOwnProperty.call(promptWorkflows, id);
     const outputParts: string[] = [];
     for (const [nodeId, rawOutput] of Object.entries(item.outputs ?? {})) {
       const output = rawOutput && typeof rawOutput === 'object'
@@ -125,7 +136,7 @@ function rawHistorySignature(data: Record<string, { status?: { status_str?: stri
       ].map((file) => `${String(file.filename ?? '')}/${String(file.subfolder ?? '')}/${String(file.type ?? '')}`);
       outputParts.push(`${nodeId}=${media.join(',')}`);
     }
-    parts.push(`${id}:${status?.status_str ?? ''}:${completed}:${outputParts.join(';')}`);
+    parts.push(`${id}:${status?.status_str ?? ''}:${completed}:${hasWorkflow || hasLocalWorkflow ? 1 : 0}:${outputParts.join(';')}`);
   }
   return parts.join('|');
 }
@@ -326,7 +337,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
       // equivalent to the last one we processed (the common case for the 2s
       // poll between completions). First appearance of any prompt flips the
       // signature, so completion side-effects still fire exactly once.
-      const rawSignature = rawHistorySignature(data);
+      const rawSignature = rawHistorySignature(data, queueSnapshot.promptWorkflows);
       if (
         lastRawHistorySignatures.get(maxItems) === rawSignature &&
         get().history.length > 0
@@ -450,11 +461,16 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
           ? promptTuple[4].filter((value): value is string => typeof value === 'string')
           : undefined;
         const embeddedWorkflow = (extraData as { extra_pnginfo?: { workflow?: unknown } } | undefined)?.extra_pnginfo?.workflow;
-        const workflow = isWorkflow(embeddedWorkflow)
-          ? embeddedWorkflow
-          : isEncryptedWorkflow(embeddedWorkflow)
-            ? await decryptWorkflowFromStorage<Workflow>(embeddedWorkflow).catch(() => undefined)
-            : undefined;
+        const localPromptWorkflow = queueSnapshot.promptWorkflows[prompt_id];
+        const resolveWorkflowMetadata = async (metadata: unknown): Promise<Workflow | undefined> => {
+          if (isWorkflow(metadata)) return metadata;
+          if (isEncryptedWorkflow(metadata)) {
+            return decryptWorkflowFromStorage<Workflow>(metadata).catch(() => undefined);
+          }
+          return undefined;
+        };
+        const workflow = await resolveWorkflowMetadata(embeddedWorkflow)
+          ?? await resolveWorkflowMetadata(localPromptWorkflow);
         const hidden = extraData[HIDDEN_WORKFLOW_EXTRA_DATA_KEY] === true;
         const clientIdValue = extraData.client_id ?? extraData.clientId;
         const clientId = typeof clientIdValue === 'string' ? clientIdValue : undefined;

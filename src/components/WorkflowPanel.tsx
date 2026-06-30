@@ -13,6 +13,7 @@ import { RepositionOverlay } from "@/components/RepositionOverlay";
 import {
   flattenLayoutToNodeOrder,
   getGroupKey,
+  makeLocationPointer,
   scopedNodeKey,
   type ItemRef,
 } from "@/utils/mobileLayout";
@@ -47,6 +48,27 @@ import {
 import { fuzzyMatch, normalizeTypes } from "@/utils/workflowSearch";
 import { useErrorBadges } from "./WorkflowPanel/useErrorBadges";
 import { useExecutionFollower } from "./WorkflowPanel/useExecutionFollower";
+import { isMultiLoraStackNodeType } from "@/utils/loraManager";
+import { loadUserWorkflow } from "@/api/client/workflows";
+import {
+  BIGLOVE_KLEIN3_MLX_TEST_FILENAME,
+  isBigLoveKlein3MlxWorkflow,
+  repairBigLoveKlein3MlxComfyLoraStack,
+} from "@/utils/bigLoveKleinLoraMigration";
+
+const ANIMA_PROMPT_ASSISTANT_WORKFLOW_FILENAME =
+  "Anima WAI Couple Turbo - Prompt Assistant.json";
+
+function isAnimaPromptAssistantWorkflowFilename(filename: string | null): boolean {
+  if (!filename) return false;
+  return filename.split("/").pop() === ANIMA_PROMPT_ASSISTANT_WORKFLOW_FILENAME;
+}
+
+function isBigLoveKlein3MlxTestWorkflowFilename(filename: string | null): boolean {
+  if (!filename) return false;
+  const basename = filename.split("/").pop();
+  return basename === BIGLOVE_KLEIN3_MLX_TEST_FILENAME || basename === "BigLoveKlein3MLXTest";
+}
 
 export const WorkflowPanel = memo(function WorkflowPanel({
   visible,
@@ -114,6 +136,7 @@ export const WorkflowPanel = memo(function WorkflowPanel({
   const parentRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
+  const currentFilename = useWorkflowStore((s) => s.currentFilename);
   // Drag-and-drop a workflow .json or an image (workflow extracted from its
   // embedded metadata) onto the panel to load it. dragDepthRef counters the
   // enter/leave events from descendant elements so the overlay doesn't flicker.
@@ -171,6 +194,111 @@ export const WorkflowPanel = memo(function WorkflowPanel({
     }
     return map;
   }, [workflow]);
+
+  const repairedMissingAnimaLoraStackRef = useRef<string | null>(null);
+  const repairedMissingBigLoveLoraStackRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!workflow || !isAnimaPromptAssistantWorkflowFilename(currentFilename)) return;
+    if (workflow.nodes?.some((node) => isMultiLoraStackNodeType(node.type))) return;
+    if (repairedMissingAnimaLoraStackRef.current === currentFilename) return;
+
+    repairedMissingAnimaLoraStackRef.current = currentFilename;
+    void loadUserWorkflow(ANIMA_PROMPT_ASSISTANT_WORKFLOW_FILENAME)
+      .then((serverWorkflow) => {
+        if (!serverWorkflow.nodes?.some((node) => isMultiLoraStackNodeType(node.type))) {
+          return;
+        }
+        const filename = currentFilename ?? ANIMA_PROMPT_ASSISTANT_WORKFLOW_FILENAME;
+        loadWorkflow(serverWorkflow, filename, {
+          fresh: true,
+          replaceActive: true,
+          navigate: false,
+          source: { type: "user", filename },
+        });
+      })
+      .catch((error) => {
+        console.error("Failed to repair Anima prompt assistant workflow from disk:", error);
+        repairedMissingAnimaLoraStackRef.current = null;
+      });
+  }, [currentFilename, loadWorkflow, workflow]);
+
+  useEffect(() => {
+    if (
+      !workflow ||
+      (
+        !isBigLoveKlein3MlxTestWorkflowFilename(currentFilename) &&
+        !isBigLoveKlein3MlxWorkflow(workflow)
+      )
+    ) return;
+    if (workflow.nodes?.some((node) => isMultiLoraStackNodeType(node.type))) return;
+    const repairKey = currentFilename ?? BIGLOVE_KLEIN3_MLX_TEST_FILENAME;
+    if (repairedMissingBigLoveLoraStackRef.current === repairKey) return;
+
+    repairedMissingBigLoveLoraStackRef.current = repairKey;
+    const filename = isBigLoveKlein3MlxTestWorkflowFilename(currentFilename)
+      ? currentFilename ?? BIGLOVE_KLEIN3_MLX_TEST_FILENAME
+      : BIGLOVE_KLEIN3_MLX_TEST_FILENAME;
+    const repairedWorkflow = repairBigLoveKlein3MlxComfyLoraStack(workflow, filename);
+    if (repairedWorkflow.changed) {
+      loadWorkflow(repairedWorkflow.workflow, filename, {
+        fresh: true,
+        replaceActive: true,
+        navigate: false,
+        source: { type: "user", filename },
+      });
+      return;
+    }
+
+    void loadUserWorkflow(BIGLOVE_KLEIN3_MLX_TEST_FILENAME)
+      .then((serverWorkflow) => {
+        if (!serverWorkflow.nodes?.some((node) => isMultiLoraStackNodeType(node.type))) {
+          return;
+        }
+        loadWorkflow(serverWorkflow, filename, {
+          fresh: true,
+          replaceActive: true,
+          navigate: false,
+          source: { type: "user", filename },
+        });
+      })
+      .catch((error) => {
+        console.error("Failed to repair BigLove Klein3 MLX workflow from disk:", error);
+        repairedMissingBigLoveLoraStackRef.current = null;
+      });
+  }, [currentFilename, loadWorkflow, workflow]);
+
+  useEffect(() => {
+    if (!workflow) return;
+
+    const keysToReveal = new Set<string>();
+    const collectNode = (node: WorkflowNode, subgraphId: string | null) => {
+      if (!isMultiLoraStackNodeType(node.type)) return;
+      const pointer = makeLocationPointer({ type: "node", nodeId: node.id, subgraphId });
+      const candidates = [
+        typeof node.itemKey === "string" ? node.itemKey : null,
+        pointer,
+        String(node.id),
+        subgraphId == null
+          ? `root:node:${node.id}`
+          : `subgraph:${subgraphId}:node:${node.id}`,
+      ].filter((key): key is string => Boolean(key));
+      if (candidates.some((key) => hiddenItems[key])) {
+        candidates.forEach((key) => keysToReveal.add(key));
+      }
+    };
+
+    for (const node of workflow.nodes ?? []) {
+      collectNode(node, null);
+    }
+    for (const subgraph of workflow.definitions?.subgraphs ?? []) {
+      for (const node of subgraph.nodes ?? []) {
+        collectNode(node, subgraph.id);
+      }
+    }
+
+    keysToReveal.forEach((key) => setItemHidden(key, false));
+  }, [hiddenItems, setItemHidden, workflow]);
   const subgraphItemKeyById = useMemo(
     () =>
       new Map(

@@ -7,7 +7,11 @@ import type { QueueWorkflowDiff } from '@/utils/workflowDiff';
 import { idbStorage } from '@/utils/idbStorage';
 import { createQueueDisplaySlice } from './useQueue/displaySlice';
 import { createQueueRecoverySlice } from './useQueue/recoverySlice';
-import { capWorkflowDiffs, makeShadowJobFromQueueItem } from './useQueue/queueHelpers';
+import {
+  extractPromptWorkflowMetadata,
+  makeShadowJobFromQueueItem,
+  withPromptWorkflowMetadata,
+} from './useQueue/queueHelpers';
 
 export interface QueueItem {
   number: number;
@@ -84,6 +88,7 @@ export interface QueueState {
   previewVisibilityDefault: boolean;
   // Per-prompt workflow diff/prompt-preview, computed at enqueue time.
   workflowDiffs: Record<string, QueueWorkflowDiff>;
+  promptWorkflows: Record<string, unknown>;
   shadowQueueJobs: Record<string, ShadowQueueJob>;
   recoverableJobIds: string[];
   autoRestoredPromptIds: Record<string, string>;
@@ -209,6 +214,7 @@ export const useQueueStore = create<QueueState>()(
             // re-render on identical payloads (identity-stable polling).
             let shadowChanged = false;
             const shadowQueueJobs = { ...state.shadowQueueJobs };
+            let promptWorkflows = state.promptWorkflows;
             const activePromptIds = new Set([
               ...running.map((item) => item.prompt_id),
               ...pending.map((item) => item.prompt_id),
@@ -225,6 +231,11 @@ export const useQueueStore = create<QueueState>()(
               }
             }
             for (const item of pending) {
+              promptWorkflows = withPromptWorkflowMetadata(
+                promptWorkflows,
+                item.prompt_id,
+                extractPromptWorkflowMetadata(item.extra),
+              );
               const existing = shadowQueueJobs[item.prompt_id];
               if (!existing) {
                 shadowQueueJobs[item.prompt_id] = makeShadowJobFromQueueItem(item, 'pending');
@@ -235,6 +246,11 @@ export const useQueueStore = create<QueueState>()(
               }
             }
             for (const item of running) {
+              promptWorkflows = withPromptWorkflowMetadata(
+                promptWorkflows,
+                item.prompt_id,
+                extractPromptWorkflowMetadata(item.extra),
+              );
               const existing = shadowQueueJobs[item.prompt_id];
               if (existing && existing.status !== 'running') {
                 shadowQueueJobs[item.prompt_id] = { ...existing, status: 'running' };
@@ -287,6 +303,7 @@ export const useQueueStore = create<QueueState>()(
                 ? completionDurations
                 : state.completionDurations,
               shadowQueueJobs: shadowChanged ? shadowQueueJobs : state.shadowQueueJobs,
+              promptWorkflows,
             };
           });
           void get().fetchQueueMetadata([
@@ -308,12 +325,15 @@ export const useQueueStore = create<QueueState>()(
           set((state) => {
             const pendingIds = new Set(state.pending.map((item) => item.prompt_id));
             const shadowQueueJobs = { ...state.shadowQueueJobs };
+            const promptWorkflows = { ...state.promptWorkflows };
             for (const promptId of pendingIds) {
               delete shadowQueueJobs[promptId];
+              delete promptWorkflows[promptId];
             }
             return {
               pending: [],
               shadowQueueJobs,
+              promptWorkflows,
               recoverableJobIds: state.recoverableJobIds.filter((id) => !pendingIds.has(id)),
             };
           });
@@ -337,6 +357,8 @@ export const useQueueStore = create<QueueState>()(
             delete autoRestoredPromptIds[promptId];
             const workflowDiffs = { ...state.workflowDiffs };
             delete workflowDiffs[promptId];
+            const promptWorkflows = { ...state.promptWorkflows };
+            delete promptWorkflows[promptId];
             return {
               pending: state.pending.filter((item) => item.prompt_id !== promptId),
               localPromptOrder,
@@ -344,6 +366,7 @@ export const useQueueStore = create<QueueState>()(
               shadowQueueJobs,
               autoRestoredPromptIds,
               workflowDiffs,
+              promptWorkflows,
               recoverableJobIds: state.recoverableJobIds.filter((id) => id !== promptId),
             };
           });
@@ -397,6 +420,11 @@ export const useQueueStore = create<QueueState>()(
           const running = state.running.some((existing) => existing.prompt_id === promptId)
             ? state.running
             : [...state.running, item];
+          const promptWorkflows = withPromptWorkflowMetadata(
+            state.promptWorkflows,
+            promptId,
+            extractPromptWorkflowMetadata(item.extra),
+          );
           const shadowQueueJobs = {
             ...state.shadowQueueJobs,
             [promptId]: {
@@ -410,7 +438,7 @@ export const useQueueStore = create<QueueState>()(
               sessionId: options.sessionId ?? null,
             },
           };
-          return { running, shadowQueueJobs };
+          return { running, shadowQueueJobs, promptWorkflows };
         });
       },
 
@@ -538,11 +566,12 @@ export const useQueueStore = create<QueueState>()(
     {
       name: 'queue-storage',
       storage: createJSONStorage(() => idbStorage),
-      version: 2,
+      version: 3,
       migrate: (persistedState) => ({
         ...(persistedState as Partial<QueueState>),
         showPromptPreview: false,
         workflowDiffs: {},
+        promptWorkflows: {},
         shadowQueueJobs: {},
         recoverableJobIds: [],
         autoRestoredPromptIds: {},
@@ -555,6 +584,7 @@ export const useQueueStore = create<QueueState>()(
         showQueueTimestamps: state.showQueueTimestamps,
         previewVisibility: state.previewVisibility,
         previewVisibilityDefault: state.previewVisibilityDefault,
+        promptWorkflows: state.promptWorkflows,
       })
     }
   )

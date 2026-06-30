@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { NodeTypes, Workflow, WorkflowNode } from '@/api/types';
 import {
+  getInputWidgetDefinitions,
   getWidgetDefinitions,
   PROXY_INDEX_OFFSET,
   resolveSubgraphPlaceholderInputWidgetDefs,
@@ -25,6 +26,76 @@ function makeNode(id: number, type: string, widgetsValues: unknown[]): WorkflowN
 }
 
 describe('widgetDefinitions lora manager support', () => {
+  it('does not skip an imaginary seed control slot for PromptAssistantGenerate', () => {
+    const nodeTypes: NodeTypes = {
+      PromptAssistantGenerate: {
+        input: {
+          required: {
+            idea: ['STRING', { default: '' }],
+            profile: [['swarm_booru_tags', 'swarm_wai_couple_two_lines'], { default: 'swarm_booru_tags' }],
+            context: ['STRING', { default: '' }],
+            image_caption: ['STRING', { default: '' }],
+            extra_instructions: ['STRING', { default: '' }],
+            timeout_seconds: ['FLOAT', { default: 60 }],
+            seed: ['INT', { default: -1 }],
+          },
+          optional: {
+            profile_json_override: ['STRING', { default: '' }],
+            prompt: ['STRING', { default: '' }],
+            negative_prompt: ['STRING', { default: '' }],
+            helper_mode: [['None', 'Couple regions', 'Bounding boxes'], { default: 'None' }],
+            emit_ui_text: ['BOOLEAN', { default: false }],
+            auto_generate_on_queue: ['BOOLEAN', { default: false }],
+          },
+        },
+        input_order: {
+          required: ['idea', 'profile', 'context', 'image_caption', 'extra_instructions', 'timeout_seconds', 'seed'],
+          optional: ['profile_json_override', 'prompt', 'negative_prompt', 'helper_mode', 'emit_ui_text', 'auto_generate_on_queue'],
+        },
+        output: [],
+        output_name: [],
+        name: 'PromptAssistantGenerate',
+        display_name: 'Prompt Assistant Generate',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+    const prompt = 'top-bottom composition\n1girl, himawari\n1boy, naruto';
+    const negative = 'close-up, cropped';
+    const node = makeNode(12, 'PromptAssistantGenerate', [
+      'idea',
+      'swarm_booru_tags',
+      '',
+      '',
+      '',
+      90,
+      4321,
+      '',
+      prompt,
+      negative,
+      'Couple regions',
+      true,
+      false,
+    ]);
+
+    const widgets = getWidgetDefinitions(nodeTypes, node);
+    const inputWidgets = getInputWidgetDefinitions(nodeTypes, node);
+
+    expect(widgets.find((widget) => widget.name === 'prompt')).toMatchObject({
+      widgetIndex: 8,
+      value: prompt,
+    });
+    expect(widgets.find((widget) => widget.name === 'negative_prompt')).toMatchObject({
+      widgetIndex: 9,
+      value: negative,
+    });
+    expect(inputWidgets.find((widget) => widget.name === 'helper_mode')).toMatchObject({
+      widgetIndex: 10,
+      value: 'Couple regions',
+    });
+  });
+
   it('builds lora manager synthetic widgets with choices from LoraLoader', () => {
     const nodeTypes: NodeTypes = {
       LoraLoader: {
@@ -55,6 +126,155 @@ describe('widgetDefinitions lora manager support', () => {
 
     const loraDef = defs.find((d) => d.type === 'LM_LORA');
     expect(loraDef?.options).toMatchObject({ entryIndex: 0 });
+  });
+
+  it('builds editable widgets for MultiLoRAStackModelOnly JSON stack nodes', () => {
+    const nodeTypes: NodeTypes = {
+      LoraLoader: {
+        input: {
+          required: {
+            lora_name: [['anima-turbo-lora-v0.2.safetensors'], {}],
+          },
+        },
+        output: [],
+        output_name: [],
+        name: 'LoraLoader',
+        display_name: 'LoraLoader',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+
+    const node = makeNode(11, 'MultiLoRAStackModelOnly', [
+      '[{"on":true,"lora":"anima-turbo-lora-v0.2.safetensors","strength":0.85}]',
+    ]);
+    node.title = 'LOAD LORAS HERE - Multi LoRA Stack';
+
+    const defs = getWidgetDefinitions(nodeTypes, node);
+    expect(defs.map((def) => def.type)).toEqual([
+      'LM_LORA_HEADER',
+      'LM_LORA',
+      'LM_LORA_ADD',
+    ]);
+    expect(defs[1]).toMatchObject({
+      name: 'anima-turbo-lora-v0.2.safetensors',
+      widgetIndex: 0,
+      options: {
+        entryIndex: 0,
+        preserveFileExtension: true,
+      },
+      value: {
+        name: 'anima-turbo-lora-v0.2.safetensors',
+        strength: 0.85,
+        active: true,
+      },
+    });
+  });
+
+  it('renders MFlux LoRA loader filename and strength widgets from object info', () => {
+    const nodeTypes: NodeTypes = {
+      MfluxLorasLoader: {
+        input: {
+          required: {
+            Lora1: [['None', 'characters/naruto.safetensors'], {}],
+            scale1: ['FLOAT', { default: 1, min: 0, max: 1, step: 0.01 }],
+            Lora2: [['None', 'styles/anime.safetensors'], {}],
+            scale2: ['FLOAT', { default: 1, min: 0, max: 1, step: 0.01 }],
+            Lora3: [['None'], {}],
+            scale3: ['FLOAT', { default: 1, min: 0, max: 1, step: 0.01 }],
+          },
+          optional: {
+            Loras: ['MfluxLorasPipeline', {}],
+          },
+        },
+        input_order: {
+          required: ['Lora1', 'scale1', 'Lora2', 'scale2', 'Lora3', 'scale3'],
+          optional: ['Loras'],
+        },
+        output: ['MfluxLorasPipeline'],
+        output_name: ['Loras'],
+        name: 'MfluxLorasLoader',
+        display_name: 'MFlux Loras Loader',
+        description: '',
+        python_module: '',
+        category: 'MFlux/Pro',
+      },
+    };
+
+    const node = makeNode(11, 'MfluxLorasLoader', [
+      'characters/naruto.safetensors',
+      0.6,
+      'styles/anime.safetensors',
+      0.35,
+      'None',
+      1,
+    ]);
+    node.inputs = [{ name: 'Loras', type: 'MfluxLorasPipeline', link: null }];
+
+    expect(getInputWidgetDefinitions(nodeTypes, node).map((def) => def.name)).toEqual([
+      'Lora1',
+      'Lora2',
+      'Lora3',
+    ]);
+    expect(getWidgetDefinitions(nodeTypes, node).map((def) => [def.name, def.value])).toEqual([
+      ['scale1', 0.6],
+      ['scale2', 0.35],
+      ['scale3', 1],
+    ]);
+  });
+
+  it('renders COMFY_DYNAMICCOMBO_V3 inputs as editable combo keys', () => {
+    const nodeTypes: NodeTypes = {
+      ColorTransfer: {
+        input: {
+          required: {
+            method: [['reinhard_lab'], {}],
+            source_stats: [
+              'COMFY_DYNAMICCOMBO_V3',
+              {
+                options: [
+                  { key: 'per_frame', inputs: { required: {} } },
+                  { key: 'uniform', inputs: { required: {} } },
+                  { key: 'target_frame', inputs: { required: {} } },
+                ],
+              },
+            ],
+            strength: ['FLOAT', { default: 1 }],
+          },
+          optional: {},
+        },
+        input_order: {
+          required: ['method', 'source_stats', 'strength'],
+          optional: [],
+        },
+        output: [],
+        output_name: [],
+        name: 'ColorTransfer',
+        display_name: 'ColorTransfer',
+        description: '',
+        python_module: '',
+        category: '',
+      },
+    };
+    const node = makeNode(11, 'ColorTransfer', [
+      'reinhard_lab',
+      { source_stats: 'per_frame' },
+      0.8,
+    ]);
+
+    const defs = getInputWidgetDefinitions(nodeTypes, node);
+    const sourceStats = defs.find((def) => def.name === 'source_stats');
+
+    expect(sourceStats).toMatchObject({
+      type: 'COMBO',
+      value: { source_stats: 'per_frame' },
+      widgetIndex: 1,
+      options: {
+        options: ['per_frame', 'uniform', 'target_frame'],
+        __dynamicComboWidgetName: 'source_stats',
+      },
+    });
   });
 
   it('uses LoRA Manager widget ids to skip metadata widgets', () => {

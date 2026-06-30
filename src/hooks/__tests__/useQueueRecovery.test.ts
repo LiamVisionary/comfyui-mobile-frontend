@@ -43,6 +43,7 @@ beforeEach(() => {
     previewVisibility: {},
     previewVisibilityDefault: false,
     workflowDiffs: {},
+    promptWorkflows: {},
     shadowQueueJobs: {},
     recoverableJobIds: [],
     autoRestoredPromptIds: {},
@@ -73,6 +74,27 @@ describe('queue recovery', () => {
       status: 'pending',
       sessionId: 'active-session',
     });
+  });
+
+  it('keeps queued workflow metadata after the shadow job completes', () => {
+    const workflowMetadata = {
+      v: 1,
+      alg: 'test',
+      data: 'encrypted-workflow-payload',
+    };
+
+    useQueueStore.getState().recordQueuedPrompt(
+      'native-with-workflow',
+      {
+        prompt: { node: {} },
+        extra_data: { extra_pnginfo: { workflow: workflowMetadata } },
+      },
+      { number: 12, outputsToExecute: ['9'], sessionId: 'active-session' },
+    );
+    useQueueStore.getState().markPromptCompleted('native-with-workflow');
+
+    expect(useQueueStore.getState().shadowQueueJobs['native-with-workflow']).toBeUndefined();
+    expect(useQueueStore.getState().promptWorkflows['native-with-workflow']).toEqual(workflowMetadata);
   });
 
   it('retains a running item when it leaves the backend queue before history arrives', async () => {
@@ -250,6 +272,36 @@ describe('queue recovery', () => {
     const { workflowDiffs } = useQueueStore.getState();
     expect(workflowDiffs['lost-pending']).toBeUndefined();
     expect(workflowDiffs['restored-prompt']).toEqual(diff);
+  });
+
+  it('carries queued workflow metadata to the restored prompt id', async () => {
+    const workflowMetadata = {
+      v: 1,
+      alg: 'test',
+      data: 'encrypted-workflow-payload',
+    };
+    useQueueStore.setState({
+      shadowQueueJobs: {
+        'lost-pending': {
+          originalPromptId: 'lost-pending',
+          prompt: { node: {} },
+          extraData: { extra_pnginfo: { workflow: workflowMetadata } },
+          outputsToExecute: ['9'],
+          number: 4,
+          status: 'pending',
+          queuedAt: 1000,
+          sessionId: 'session-a',
+        },
+      },
+      recoverableJobIds: ['lost-pending'],
+      promptWorkflows: { 'lost-pending': workflowMetadata },
+    });
+
+    await useQueueStore.getState().restoreLostJobs({ auto: true });
+
+    const { promptWorkflows } = useQueueStore.getState();
+    expect(promptWorkflows['lost-pending']).toBeUndefined();
+    expect(promptWorkflows['restored-prompt']).toEqual(workflowMetadata);
   });
 
   it('TTL-prunes a completing item whose history never arrived, keeping fresh ones', async () => {

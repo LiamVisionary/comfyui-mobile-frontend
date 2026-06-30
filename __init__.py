@@ -93,6 +93,52 @@ def _source_base_dir(source, *, allow_temp=False):
     return folder_paths.get_output_directory()
 
 
+def _source_base_dirs(source, *, allow_temp=False):
+    """Return all filesystem roots that should appear under an asset source.
+
+    The Z-Image native BigLove/Klein fast path writes encrypted logical PNGs to
+    ``~/.comfy-private.noindex/z_image_outputs``. ComfyUI's normal output root
+    remains the primary source for writes/moves, but browsing output should
+    include both roots so native generations are visible in Mobile Outputs.
+    """
+    roots = [_source_base_dir(source, allow_temp=allow_temp)]
+    if source == 'output':
+        home = os.environ.get('HOME') or os.path.expanduser('~')
+        for candidate in [
+            os.environ.get('ZIMG_OUTPUT_DIR'),
+            os.path.join(home, '.comfy-private.noindex', 'z_image_outputs'),
+        ]:
+            if not candidate:
+                continue
+            if not any(os.path.realpath(candidate) == os.path.realpath(root) for root in roots):
+                roots.append(candidate)
+    return roots
+
+
+def _merge_listing_results(results):
+    """Deduplicate merged listings from multiple roots by logical path."""
+    merged = {}
+    for item in results:
+        key = (item.get('type'), item.get('path') or item.get('name'))
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = dict(item)
+            continue
+        if item.get('type') == 'dir':
+            existing['count'] = int(existing.get('count') or 0) + int(item.get('count') or 0)
+            existing['size'] = int(existing.get('size') or 0) + int(item.get('size') or 0)
+            existing['date'] = max(int(existing.get('date') or 0), int(item.get('date') or 0))
+            continue
+        if int(item.get('date') or 0) > int(existing.get('date') or 0):
+            merged[key] = dict(item)
+
+    def sort_key(item):
+        is_dir = 0 if item.get('type') == 'dir' else 1
+        return (is_dir, str(item.get('name') or '').lower())
+
+    return sorted(merged.values(), key=sort_key)
+
+
 def _read_pnginfo_metadata(path):
     """Open an image and return its merged info/text metadata dict, closing the
     file handle. Synchronous (PIL parse + file I/O) — call via run_in_executor
@@ -153,7 +199,7 @@ def setup_mobile_route():
         try:
             query = request.rel_url.query
             source = query.get('source', 'output')
-            base_dir = _source_base_dir(source)
+            base_dirs = _source_base_dirs(source)
             subpath = query.get('path', '')
             recursive = query.get('recursive', 'false').lower() == 'true'
             dirs_only = query.get('dirsOnly', 'false').lower() == 'true'
@@ -170,12 +216,20 @@ def setup_mobile_route():
             limit = _safe_int(query.get('limit'), 0)
             offset = _safe_int(query.get('offset'), 0)
 
-            # Security check for path traversal
-            target_path = _safe_join(base_dir, subpath)
-            if target_path is None:
+            target_paths = []
+            access_denied = False
+            for base_dir in base_dirs:
+                target_path = _safe_join(base_dir, subpath)
+                if target_path is None:
+                    access_denied = True
+                    continue
+                if os.path.exists(target_path):
+                    target_paths.append((base_dir, target_path))
+
+            if access_denied:
                 return web.json_response({"error": "Access denied"}, status=403)
 
-            if not os.path.exists(target_path):
+            if not target_paths:
                 return web.json_response({"error": "Path not found"}, status=404)
 
             # All of the filesystem work below — the recursive walk in list_files,
@@ -188,15 +242,36 @@ def setup_mobile_route():
                 # `search` already filters by filename inside list_files. For the
                 # combined `q` case we want the union (filename OR prompt match),
                 # so don't pre-filter by filename here — apply both checks after.
-                results = list_files(
-                    base_dir, target_path,
-                    recursive=recursive or bool(prompt_search) or bool(combined_search),
-                    show_hidden=show_hidden,
-                    search='' if combined_search else search,
-                    start_date=start_date,
-                    end_date=end_date,
-                    dirs_only=dirs_only
-                )
+                all_results = []
+                for base_dir, target_path in target_paths:
+                    results = list_files(
+                        base_dir, target_path,
+                        recursive=recursive or bool(prompt_search) or bool(combined_search),
+                        show_hidden=show_hidden,
+                        search='' if combined_search else search,
+                        start_date=start_date,
+                        end_date=end_date,
+                        dirs_only=dirs_only
+                    )
+                    if prompt_search:
+                        results = [
+                            r for r in results
+                            if prompt_search in get_cached_prompt_text(os.path.join(base_dir, r['path']))
+                        ]
+
+                    # Combined search: filename OR prompt JSON match.
+                    if combined_search:
+                        def matches_combined(entry):
+                            if entry_matches_name_or_path(entry, combined_search, subpath):
+                                return True
+                            return combined_search in get_cached_prompt_text(
+                                os.path.join(base_dir, entry['path'])
+                            )
+                        results = [r for r in results if matches_combined(r)]
+
+                    all_results.extend(results)
+
+                results = _merge_listing_results(all_results)
                 if source == 'input':
                     # Alias files must remain at the input root so stock Load Image
                     # accepts them, but they are implementation details and should
@@ -205,26 +280,6 @@ def setup_mobile_route():
                         r for r in results
                         if not (r.get('path') or '').startswith(_mobile_input_aliases.ALIAS_PREFIX)
                     ]
-
-                # Additional prompt search filter (requires reading image metadata).
-                # Backed by an mtime-keyed in-memory cache so repeat searches don't
-                # re-open every file. Matches the lowercased prompt JSON text as a
-                # substring against the lowercased query.
-                if prompt_search:
-                    results = [
-                        r for r in results
-                        if prompt_search in get_cached_prompt_text(os.path.join(base_dir, r['path']))
-                    ]
-
-                # Combined search: filename OR prompt JSON match.
-                if combined_search:
-                    def matches_combined(entry):
-                        if entry_matches_name_or_path(entry, combined_search, subpath):
-                            return True
-                        return combined_search in get_cached_prompt_text(
-                            os.path.join(base_dir, entry['path'])
-                        )
-                    results = [r for r in results if matches_combined(r)]
 
                 # Apply manually-hidden state (independent of the dot-prefix hiding
                 # already handled inside list_files). Do not prune missing paths

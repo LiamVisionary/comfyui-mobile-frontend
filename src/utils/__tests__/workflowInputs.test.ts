@@ -1,12 +1,22 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   applyBypassedRegionalPromptFallbacks,
+  applyPromptAssistantForgeCoupleAutomation,
+  applyPromptAssistantForgeCoupleQueueAutomation,
   buildWorkflowPromptInputs,
+  FORGE_COUPLE_HORIZONTAL_ADVANCED_MAPPING,
+  FORGE_COUPLE_VERTICAL_ADVANCED_MAPPING,
+  getComboComparableValue,
+  getDynamicComboOptionKeys,
   getWidgetValue,
   getWorkflowWidgetIndexMap,
+  inferPromptAssistantForgeCoupleDirection,
   isWidgetInputType,
+  normalizeDynamicComboInputValue,
   normalizeWidgetValue,
   normalizeComboValue,
+  normalizePromptAssistantHelperMode,
+  normalizePromptAssistantProfileJsonOverride,
   optionsAreFileLike,
   isValueCompatible,
   resolveComboOption,
@@ -179,6 +189,33 @@ describe('normalizeWidgetValue', () => {
 
   it('passes through combo value without comboIndexToValue', () => {
     expect(normalizeWidgetValue('euler', ['euler', 'ddim'])).toBe('euler');
+  });
+});
+
+describe('dynamic combo helpers', () => {
+  it('extracts keys from COMFY_DYNAMICCOMBO_V3 object options', () => {
+    expect(getDynamicComboOptionKeys({
+      options: [
+        { key: 'per_frame', inputs: { required: {} } },
+        { key: 'uniform', inputs: { required: {} } },
+      ],
+    })).toEqual(['per_frame', 'uniform']);
+  });
+
+  it('compares and serializes dynamic combo widget values by selected key', () => {
+    const value = { source_stats: 'per_frame' };
+    expect(getComboComparableValue(value, 'source_stats')).toBe('per_frame');
+    expect(resolveComboOption(value, ['per_frame', 'uniform'], 'source_stats')).toBe('per_frame');
+    expect(normalizeDynamicComboInputValue('uniform', 'source_stats')).toEqual({
+      source_stats: 'uniform',
+    });
+  });
+
+  it('preserves extra dynamic combo fields when normalizing object values', () => {
+    expect(normalizeDynamicComboInputValue(
+      { source_stats: 'target_frame', target_index: 3 },
+      'source_stats',
+    )).toEqual({ source_stats: 'target_frame', target_index: 3 });
   });
 });
 
@@ -1508,7 +1545,7 @@ describe('PromptAssistantGenerate queue serialization', () => {
     },
   };
 
-  it('queues only the editable final prompt fields and disables stale auto-generation inputs', () => {
+  it('preserves the idea while queueing editable final prompt fields and disables stale generation inputs', () => {
     const node = makeNode(12, 'PromptAssistantGenerate', {
       widgets_values: [
         'stale idea: two adult women and one adult man',
@@ -1545,14 +1582,111 @@ describe('PromptAssistantGenerate queue serialization', () => {
       null,
     );
 
-    expect(inputs.idea).toBe('');
+    expect(inputs.idea).toBe('stale idea: two adult women and one adult man');
     expect(inputs.prompt).toBe('1girl, adult woman\n1boy, adult man');
     expect(inputs.negative_prompt).toBe('bad anatomy');
     expect(inputs.context).toBe('');
     expect(inputs.image_caption).toBe('');
     expect(inputs.extra_instructions).toBe('');
+    expect(inputs.helper_mode).toBe('Couple regions');
     expect(inputs.emit_ui_text).toBe(true);
     expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+
+  it('normalizes stale boolean helper mode values before queueing', () => {
+    const node = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea',
+        'swarm_booru_tags',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        '',
+        'smiling dog with fluffy fur',
+        '',
+        true,
+        true,
+        false,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      node,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.prompt).toBe('smiling dog with fluffy fur');
+    expect(inputs.helper_mode).toBe('None');
+    expect(inputs.emit_ui_text).toBe(true);
+    expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+
+  it('normalizes helper mode aliases used by older saved workflows', () => {
+    expect(normalizePromptAssistantHelperMode('Regional prompt')).toBe('Couple regions');
+    expect(normalizePromptAssistantHelperMode('bbox')).toBe('Bounding boxes');
+    expect(normalizePromptAssistantHelperMode(true)).toBe('None');
+  });
+
+  it('normalizes stale profile JSON override placeholders before queueing', () => {
+    expect(normalizePromptAssistantProfileJsonOverride('')).toBe('');
+    expect(normalizePromptAssistantProfileJsonOverride('undefined')).toBe('');
+    expect(normalizePromptAssistantProfileJsonOverride('null')).toBe('');
+    expect(normalizePromptAssistantProfileJsonOverride('not json')).toBe('');
+    expect(normalizePromptAssistantProfileJsonOverride('{"temperature":0.2}')).toBe('{"temperature":0.2}');
+
+    const node = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea',
+        'swarm_booru_tags',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        'undefined',
+        'smiling dog with fluffy fur',
+        '',
+        'None',
+        true,
+        false,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      node,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.profile_json_override).toBe('');
+    expect(inputs.prompt).toBe('smiling dog with fluffy fur');
   });
 
   it('defaults blank helper mode to plain prompting', () => {
@@ -1646,5 +1780,349 @@ describe('PromptAssistantGenerate queue serialization', () => {
     expect(inputs.prompt).toBe(structuredPrompt);
     expect(inputs.negative_prompt).toBe('');
     expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+
+  it('promotes a regional final prompt that was accidentally stored in final negative over a stale preview prompt', () => {
+    const stalePreviewPrompt = [
+      '2girls, blonde twintails, cyan eyes, white serafuku, standing, waving, looking at viewer, smile, anime coloring',
+      '2girls, black long hair, red eyes, dark school uniform, standing, crossed arms, looking away, anime coloring',
+    ].join('\n');
+    const regionalPrompt = [
+      'top-bottom composition, indoor room, soft natural lighting, warm atmosphere, focus on interaction',
+      '1girl, female focus, looking up, kneeling, foreground',
+      '1boy, male focus, sitting back on sofa, background',
+    ].join('\n');
+    const node = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea',
+        'swarm_wai_couple_two_lines',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        '',
+        stalePreviewPrompt,
+        regionalPrompt,
+        'Couple regions',
+        true,
+        true,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 0,
+      nodes: [node],
+      links: [],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      node,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.prompt).toBe(regionalPrompt);
+    expect(inputs.negative_prompt).toBe('');
+    expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+
+  it('does not resurrect connected Forge positive text when an old helper node has no final prompt widget', () => {
+    const forgePrompt = [
+      'shared scene, two distinct adult people, left-right composition',
+      '1boy, adult man, left half only',
+      '1girl, adult woman, right half only',
+    ].join('\n');
+    const assistantNode = makeNode(12, 'PromptAssistantGenerate', {
+      widgets_values: [
+        'stale idea',
+        'swarm_wai_couple_two_lines',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        '',
+      ],
+      outputs: [
+        { name: 'prompt', type: 'STRING', links: [14], slot_index: 0 },
+      ],
+    });
+    const forgeNode = makeNode(4, 'ForgeCoupleRegionalPrompt', {
+      inputs: [
+        { name: 'model', type: 'MODEL', link: null },
+        { name: 'clip', type: 'CLIP', link: null },
+        { name: 'positive_text', type: 'STRING', link: 14 },
+      ],
+      widgets_values: [
+        forgePrompt,
+        1024,
+        1344,
+        'auto',
+        'Basic',
+        'Auto',
+        'First Line',
+        0.25,
+        '\\n',
+        '[[0.0, 1.0, 0.0, 1.0, 0.25], [0.0, 0.5, 0.0, 1.0, 1.25], [0.5, 1.0, 0.0, 1.0, 1.25]]',
+        'Off',
+        true,
+      ],
+    });
+    const workflow: Workflow = {
+      last_node_id: 12,
+      last_link_id: 14,
+      nodes: [assistantNode, forgeNode],
+      links: [[14, 12, 0, 4, 2, 'STRING']],
+      groups: [],
+      config: {},
+      version: 1,
+    };
+
+    const inputs = buildWorkflowPromptInputs(
+      workflow,
+      nodeTypes,
+      assistantNode,
+      'PromptAssistantGenerate',
+      new Set([12]),
+      null,
+    );
+
+    expect(inputs.idea).toBe('stale idea');
+    expect(inputs.prompt).toBe('');
+    expect(inputs.auto_generate_on_queue).toBe(false);
+  });
+});
+
+describe('PromptAssistant Forge Couple automation', () => {
+  function createForgeWorkflow(): { workflow: Workflow; assistantNode: WorkflowNode; forgeNode: WorkflowNode } {
+    const assistantNode = makeNode(12, 'PromptAssistantGenerate', {
+      outputs: [
+        { name: 'prompt', type: 'STRING', links: [14], slot_index: 0 },
+        { name: 'negative_prompt', type: 'STRING', links: [16], slot_index: 1 },
+      ],
+      widgets_values: [
+        'idea',
+        'swarm_booru_tags',
+        '',
+        '',
+        '',
+        90,
+        4321,
+        '',
+        '',
+        '',
+        'Couple regions',
+        true,
+        false,
+      ],
+    });
+    const forgeNode = makeNode(4, 'ForgeCoupleRegionalPrompt', {
+      inputs: [
+        { name: 'model', type: 'MODEL', link: null },
+        { name: 'clip', type: 'CLIP', link: null },
+        { name: 'positive_text', type: 'STRING', link: 14 },
+      ],
+      widgets_values: [
+        'old prompt',
+        1024,
+        1024,
+        'forge_attention',
+        'Advanced',
+        'Horizontal',
+        'None',
+        0.2,
+        '\\n',
+        'old mapping',
+        'Off',
+        false,
+        '[{"on":true,"lora":"HimawariUzumaki_AnimaPreview3_byKonan.safetensors","strength":1,"targets":["himawari"]}]',
+      ],
+    });
+    return {
+      assistantNode,
+      forgeNode,
+      workflow: {
+        last_node_id: 12,
+        last_link_id: 16,
+        nodes: [assistantNode, forgeNode],
+        links: [
+          [14, 12, 0, 4, 2, 'STRING'],
+          [16, 12, 1, 5, 1, 'STRING'],
+        ],
+        groups: [],
+        config: {},
+        version: 1,
+      },
+    };
+  }
+
+  it('infers horizontal regions from left/right prompts', () => {
+    const prompt = [
+      'shared cozy sofa scene, left-right composition, both faces visible',
+      'left: naruto uzumaki, 1boy, male focus, sitting on left side',
+      'right: himawari, 1girl, female focus, sitting on right side',
+    ].join('\n');
+
+    expect(inferPromptAssistantForgeCoupleDirection(prompt)).toBe('Horizontal');
+  });
+
+  it('configures the linked Forge node for horizontal couple regions and preserves LoRA rules', () => {
+    const { workflow, assistantNode } = createForgeWorkflow();
+    const prompt = [
+      'shared cozy sofa scene, left-right composition, both faces visible',
+      'left: naruto uzumaki, 1boy, male focus, sitting on left side',
+      'right: himawari, 1girl, female focus, sitting on right side',
+    ].join('\n');
+
+    const result = applyPromptAssistantForgeCoupleAutomation(
+      workflow,
+      assistantNode,
+      prompt,
+      'Couple regions',
+    );
+
+    expect(result?.direction).toBe('Horizontal');
+    const updatedForgeNode = result?.workflow.nodes.find((node) => node.id === 4);
+    expect(updatedForgeNode?.widgets_values).toEqual([
+      prompt,
+      1024,
+      1024,
+      'anima_mask',
+      'Basic',
+      'Horizontal',
+      'First Line',
+      0.25,
+      '\\n',
+      FORGE_COUPLE_HORIZONTAL_ADVANCED_MAPPING,
+      'Off',
+      true,
+      '[{"on":true,"lora":"HimawariUzumaki_AnimaPreview3_byKonan.safetensors","strength":1,"targets":["himawari"]}]',
+    ]);
+  });
+
+  it('configures the linked Forge node for vertical couple regions', () => {
+    const { workflow, assistantNode } = createForgeWorkflow();
+    const prompt = [
+      'shared cozy sofa scene, top-bottom composition, both faces visible',
+      'top: naruto uzumaki, 1boy, male focus, reclining on sofa above',
+      'bottom: himawari, 1girl, female focus, leaning upward below',
+    ].join('\n');
+
+    const result = applyPromptAssistantForgeCoupleAutomation(
+      workflow,
+      assistantNode,
+      prompt,
+      'Couple regions',
+    );
+
+    expect(result?.direction).toBe('Vertical');
+    const updatedForgeNode = result?.workflow.nodes.find((node) => node.id === 4);
+    expect(Array.isArray(updatedForgeNode?.widgets_values)).toBe(true);
+    const values = updatedForgeNode?.widgets_values as unknown[];
+    expect(values[0]).toBe(prompt);
+    expect(values[3]).toBe('anima_mask');
+    expect(values[4]).toBe('Basic');
+    expect(values[5]).toBe('Vertical');
+    expect(values[6]).toBe('First Line');
+    expect(values[9]).toBe(FORGE_COUPLE_VERTICAL_ADVANCED_MAPPING);
+    expect(values[12]).toBe('[{"on":true,"lora":"HimawariUzumaki_AnimaPreview3_byKonan.safetensors","strength":1,"targets":["himawari"]}]');
+  });
+
+  it('uses no background line for two-line regional prompts', () => {
+    const { workflow, assistantNode } = createForgeWorkflow();
+    const prompt = [
+      'left: naruto uzumaki, 1boy, male focus, sitting on left side',
+      'right: himawari, 1girl, female focus, sitting on right side',
+    ].join('\n');
+
+    const result = applyPromptAssistantForgeCoupleAutomation(
+      workflow,
+      assistantNode,
+      prompt,
+      'Couple regions',
+    );
+
+    const updatedForgeNode = result?.workflow.nodes.find((node) => node.id === 4);
+    expect(Array.isArray(updatedForgeNode?.widgets_values)).toBe(true);
+    const values = updatedForgeNode?.widgets_values as unknown[];
+    expect(values[4]).toBe('Basic');
+    expect(values[5]).toBe('Horizontal');
+    expect(values[6]).toBe('None');
+    expect(values[9]).toBe('[[0,0.5,0,1,1],[0.5,1,0,1,1]]');
+  });
+
+  it('does not touch Forge Couple when helper mode is plain prompting', () => {
+    const { workflow, assistantNode } = createForgeWorkflow();
+    const result = applyPromptAssistantForgeCoupleAutomation(
+      workflow,
+      assistantNode,
+      'plain prompt',
+      'None',
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('updates stale Forge Couple settings from the assistant final prompt at queue time', () => {
+    const { workflow } = createForgeWorkflow();
+    const prompt = [
+      'shared bedroom scene, top-bottom composition, medium wide shot, both faces visible',
+      'top: adult man, 1boy, male focus, upper half, leaning over partner',
+      'bottom: adult woman, 1girl, female focus, lower half, lying on bed',
+    ].join('\n');
+    const assistantNode = workflow.nodes.find((node) => node.id === 12);
+    if (assistantNode && Array.isArray(assistantNode.widgets_values)) {
+      assistantNode.widgets_values[8] = prompt;
+      assistantNode.widgets_values[10] = 'Couple regions';
+    }
+
+    const result = applyPromptAssistantForgeCoupleQueueAutomation(workflow);
+
+    expect(result.changed).toBe(true);
+    expect(result.direction).toBe('Vertical');
+    const updatedForgeNode = result.workflow.nodes.find((node) => node.id === 4);
+    expect(Array.isArray(updatedForgeNode?.widgets_values)).toBe(true);
+    const values = updatedForgeNode?.widgets_values as unknown[];
+    expect(values[0]).toBe(prompt);
+    expect(values[3]).toBe('anima_mask');
+    expect(values[4]).toBe('Basic');
+    expect(values[5]).toBe('Vertical');
+    expect(values[6]).toBe('First Line');
+    expect(values[9]).toBe(FORGE_COUPLE_VERTICAL_ADVANCED_MAPPING);
+  });
+
+  it('uses a regional prompt stored in the assistant negative slot for queue-time Forge automation', () => {
+    const { workflow } = createForgeWorkflow();
+    const stalePreview = [
+      '2girls, blonde twintails, standing',
+      '2girls, black hair, standing',
+    ].join('\n');
+    const prompt = [
+      'shared living room scene, top-bottom composition, medium wide shot, both faces visible',
+      'top: adult man, 1boy, male focus, reclining on sofa above',
+      'bottom: adult woman, 1girl, female focus, sitting on sofa below',
+    ].join('\n');
+    const assistantNode = workflow.nodes.find((node) => node.id === 12);
+    if (assistantNode && Array.isArray(assistantNode.widgets_values)) {
+      assistantNode.widgets_values[8] = stalePreview;
+      assistantNode.widgets_values[9] = prompt;
+      assistantNode.widgets_values[10] = 'Couple regions';
+    }
+
+    const result = applyPromptAssistantForgeCoupleQueueAutomation(workflow);
+
+    expect(result.changed).toBe(true);
+    const updatedForgeNode = result.workflow.nodes.find((node) => node.id === 4);
+    const values = updatedForgeNode?.widgets_values as unknown[];
+    expect(values[0]).toBe(prompt);
+    expect(values[5]).toBe('Vertical');
+    expect(values[9]).toBe(FORGE_COUPLE_VERTICAL_ADVANCED_MAPPING);
   });
 });

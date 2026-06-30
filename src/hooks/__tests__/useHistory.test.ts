@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { History, HistoryItem } from '@/api/types';
+import type { History, HistoryItem, Workflow } from '@/api/types';
 import { useHistoryStore } from '@/hooks/useHistory';
 import { useQueueStore } from '@/hooks/useQueue';
 import { useWorkflowStore } from '@/hooks/useWorkflow';
@@ -41,6 +41,33 @@ function makeHistoryItem(
   };
 }
 
+function makeWorkflow(label: string): Workflow {
+  return {
+    last_node_id: 1,
+    last_link_id: 0,
+    nodes: [
+      {
+        id: 1,
+        title: label,
+        type: 'SaveImage',
+        pos: [0, 0],
+        size: [100, 60],
+        flags: {},
+        order: 0,
+        mode: 0,
+        inputs: [],
+        outputs: [],
+        properties: {},
+        widgets_values: [label],
+      },
+    ],
+    links: [],
+    groups: [],
+    config: {},
+    version: 0.4,
+  };
+}
+
 beforeEach(() => {
   mockGetHistory.mockReset();
   mockSetFileHidden.mockClear();
@@ -63,6 +90,7 @@ beforeEach(() => {
     showQueueMetadata: false,
     previewVisibility: {},
     previewVisibilityDefault: false,
+    promptWorkflows: {},
     shadowQueueJobs: {},
   });
   useWorkflowStore.setState({
@@ -202,6 +230,27 @@ describe('useHistoryStore', () => {
       },
       outputsToExecute: ['9'],
     });
+  });
+
+  it('recovers workflow metadata from the queued prompt cache when history omits it', async () => {
+    const promptId = 'native-history-without-workflow';
+    const cachedWorkflow = makeWorkflow('cached-native-submit-workflow');
+    const item = makeHistoryItem(promptId, {
+      status_str: 'success',
+      completed: true,
+      messages: [],
+    });
+    item.prompt = [7, promptId, {}, {}, ['9']];
+    useQueueStore.setState({
+      promptWorkflows: {
+        [promptId]: cachedWorkflow,
+      },
+    });
+    mockGetHistory.mockResolvedValue({ [promptId]: item });
+
+    await useHistoryStore.getState().fetchHistory();
+
+    expect(useHistoryStore.getState().history[0].workflow).toEqual(cachedWorkflow);
   });
 
   it('hydrates workflow node outputs from completed history when websocket output events are absent', async () => {

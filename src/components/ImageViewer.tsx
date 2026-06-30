@@ -344,7 +344,7 @@ export function ImageViewer({ onClose }: ImageViewerProps) {
       return loaded;
     } catch (err) {
       console.error('Failed to load workflow from file:', err);
-      window.alert('Failed to load workflow from file.');
+      window.alert(err instanceof Error ? err.message : 'Failed to load workflow from file.');
       return false;
     } finally {
       setLoadWorkflowTarget(null);

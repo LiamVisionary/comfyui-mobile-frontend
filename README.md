@@ -292,7 +292,7 @@ http://<your-comfyui-ip>:8188/mobile
 
 ### LoRA Manager UI Integration
 
-This mobile frontend supports LoRA Manager nodes and websocket integration. The integration will work mostly out of the box, but the "Open LoRA Manager" action assumes by default that your LoRA Manager is running at `/loras` on the same host. If this is not the case, you can override the default assumption using one of the two methods:
+This mobile frontend supports LoRA Manager nodes and websocket integration. The integration will work mostly out of the box, and the "Open LoRA Manager" action assumes by default that the model manager is available at `/?tab=models#models` on the same host. Same-origin opens inherit the current `token` query parameter. If this is not the case, you can override the default assumption using one of the two methods:
 
 1. `VITE_LORA_MANAGER_UI_URL` environment variable (build-time, run `npm run build` in the custom node directory to apply this change)
 2. `localStorage["comfyui-mobile-lora-manager-ui-url"]` override

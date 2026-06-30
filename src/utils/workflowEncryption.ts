@@ -196,6 +196,10 @@ export async function encryptWorkflowForStorage(workflow: unknown): Promise<Encr
   };
 }
 
+export async function encryptPrivateJsonForStorage(value: unknown): Promise<EncryptedWorkflowEnvelope> {
+  return encryptWorkflowForStorage(value);
+}
+
 export async function decryptWorkflowFromStorage<T = unknown>(stored: unknown): Promise<T> {
   if (!isEncryptedWorkflow(stored)) return stored as T;
   if (!crypto?.subtle) throw new Error('WebCrypto is required for workflow decryption');
@@ -209,6 +213,10 @@ export async function decryptWorkflowFromStorage<T = unknown>(stored: unknown): 
   } catch {
     throw new Error('Could not decrypt workflow. Unlock ComfyUI Mobile with the same passphrase used when this workflow/image was saved.');
   }
+}
+
+export async function decryptPrivateJsonFromStorage<T = unknown>(stored: unknown): Promise<T> {
+  return decryptWorkflowFromStorage<T>(stored);
 }
 
 export function clearWorkflowEncryptionKey(): void {

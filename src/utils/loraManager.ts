@@ -1,4 +1,4 @@
-import type { WorkflowNode } from '@/api/types';
+import type { Workflow, WorkflowNode } from '@/api/types';
 
 export interface LoraManagerEntry {
   name: string;
@@ -8,6 +8,15 @@ export interface LoraManagerEntry {
   expanded?: boolean;
   locked?: boolean;
   [key: string]: unknown;
+}
+
+export interface ActiveLoraReference {
+  name: string;
+  strength?: number | string;
+  active?: boolean;
+  node_id?: number;
+  node_title?: string;
+  node_type?: string;
 }
 
 const LORA_LOADER_NODE_TYPES = new Set([
@@ -30,6 +39,11 @@ const LORA_DIRECT_PROVIDER_NODE_TYPES = new Set([
 const LORA_CYCLER_NODE_TYPES = new Set([
   'Lora Cycler (LoraManager)'
 ]);
+const MULTI_LORA_STACK_NODE_TYPES = new Set([
+  'MultiLoRAStack',
+  'MultiLoRAStackModelOnly',
+]);
+const MFLUX_LORAS_LOADER_NODE_TYPE = 'MfluxLorasLoader';
 
 const EPSILON = Number.EPSILON;
 
@@ -52,6 +66,16 @@ export const POWER_LORA_LOADER_NODE_TYPE = 'Power Lora Loader (rgthree)';
 
 export function isPowerLoraLoaderNodeType(nodeType: string | undefined | null): boolean {
   return nodeType === POWER_LORA_LOADER_NODE_TYPE;
+}
+
+export function isMultiLoraStackNodeType(nodeType: string | undefined | null): boolean {
+  if (!nodeType) return false;
+  if (MULTI_LORA_STACK_NODE_TYPES.has(nodeType)) return true;
+  return nodeType.toLowerCase().includes('multilorastack');
+}
+
+export function isMfluxLorasLoaderNodeType(nodeType: string | undefined | null): boolean {
+  return nodeType === MFLUX_LORAS_LOADER_NODE_TYPE;
 }
 
 export function isLoraLoaderNodeType(nodeType: string): boolean {
@@ -114,6 +138,219 @@ export function extractLoraList(value: unknown): LoraManagerEntry[] | null {
     return value.__value__ as LoraManagerEntry[];
   }
   return null;
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+export function normalizeLoraStackEntry(entry: LoraManagerEntry): LoraManagerEntry {
+  const name = String(entry.name ?? '').replace(/\\/g, '/').trim();
+  const strength = coerceNumber(entry.strength, 1);
+  const clipStrength = coerceNumber(entry.clipStrength ?? strength, strength);
+  const active = entry.active !== undefined ? Boolean(entry.active) : true;
+  const expanded = entry.expanded !== undefined
+    ? Boolean(entry.expanded)
+    : Math.abs(clipStrength - strength) > EPSILON;
+
+  return {
+    ...entry,
+    name,
+    strength,
+    clipStrength,
+    active,
+    expanded,
+  };
+}
+
+export function createDefaultLoraStackEntry(choices?: unknown[]): LoraManagerEntry {
+  const firstChoice = Array.isArray(choices) && choices.length > 0
+    ? String(choices[0]).replace(/\\/g, '/').trim()
+    : '';
+  return normalizeLoraStackEntry({
+    name: firstChoice,
+    strength: 1,
+    clipStrength: 1,
+    active: Boolean(firstChoice),
+    expanded: false,
+  });
+}
+
+export function extractMultiLoraStackList(value: unknown): LoraManagerEntry[] | null {
+  const parsed = parseMaybeJson(
+    isRecord(value) && '__value__' in value ? value.__value__ : value,
+  );
+  if (!Array.isArray(parsed)) return null;
+
+  const entries: LoraManagerEntry[] = [];
+  for (const rawEntry of parsed) {
+    if (!isRecord(rawEntry)) continue;
+    const nameValue = rawEntry.lora ?? rawEntry.name ?? '';
+    const name = String(nameValue).replace(/\\/g, '/').trim();
+    const rawStrength = rawEntry.strength ?? rawEntry.model_strength;
+    const strength =
+      typeof rawStrength === 'number' || typeof rawStrength === 'string'
+        ? rawStrength
+        : 1;
+    entries.push(normalizeLoraStackEntry({
+      name,
+      strength,
+      clipStrength: strength,
+      active: rawEntry.on !== undefined ? Boolean(rawEntry.on) : rawEntry.active !== false,
+      expanded: false,
+    }));
+  }
+  return entries;
+}
+
+function isProbablyLoraName(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const text = value.replace(/\\/g, '/').trim();
+  if (!text || /^none$/i.test(text)) return false;
+  if (text.startsWith('[') || text.startsWith('{')) return false;
+  return MODEL_EXTENSION_PATTERN.test(text) || text.includes('/');
+}
+
+function activeReferenceFromEntry(
+  entry: LoraManagerEntry,
+  node: WorkflowNode,
+): ActiveLoraReference | null {
+  const normalized = normalizeLoraStackEntry(entry);
+  if (!normalized.name || normalized.active === false) return null;
+  if (Number(normalized.strength) === 0) return null;
+  return {
+    name: normalized.name,
+    strength: normalized.strength,
+    active: true,
+    node_id: node.id,
+    node_title: node.title,
+    node_type: node.type,
+  };
+}
+
+function pushActiveReference(
+  references: ActiveLoraReference[],
+  seen: Set<string>,
+  reference: ActiveLoraReference | null,
+): void {
+  if (!reference?.name) return;
+  const key = reference.name.replace(/\\/g, '/').trim().toLowerCase();
+  if (!key || seen.has(key)) return;
+  seen.add(key);
+  references.push(reference);
+}
+
+function extractActiveLorasFromNode(
+  node: WorkflowNode,
+  references: ActiveLoraReference[],
+  seen: Set<string>,
+): void {
+  const values = node.widgets_values;
+  const lowered = `${node.type || ''} ${node.title || ''}`.toLowerCase();
+
+  if (isMultiLoraStackNodeType(node.type) && Array.isArray(values)) {
+    const stack = extractMultiLoraStackList(values[0]);
+    if (stack) {
+      stack.forEach((entry) => pushActiveReference(references, seen, activeReferenceFromEntry(entry, node)));
+    }
+  }
+
+  if (Array.isArray(values)) {
+    if (isMfluxLorasLoaderNodeType(node.type)) {
+      for (let index = 0; index < values.length; index += 2) {
+        const name = values[index];
+        const strength = values[index + 1] ?? 1;
+        if (isProbablyLoraName(name) && Number(strength) !== 0) {
+          pushActiveReference(references, seen, {
+            name,
+            strength: strength as number | string,
+            active: true,
+            node_id: node.id,
+            node_title: node.title,
+            node_type: node.type,
+          });
+        }
+      }
+    }
+
+    for (const value of values) {
+      const list = extractLoraList(value);
+      if (list) {
+        list.forEach((entry) => pushActiveReference(references, seen, activeReferenceFromEntry(entry, node)));
+      }
+
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        ('lora' in value || 'lora_name' in value || 'name' in value)
+      ) {
+        const record = value as Record<string, unknown>;
+        const name = String(record.lora ?? record.lora_name ?? record.name ?? '').replace(/\\/g, '/').trim();
+        const active = record.on !== undefined ? Boolean(record.on) : record.active !== false;
+        const strength = record.strength ?? record.model_strength ?? record.strength_model ?? 1;
+        if (name && active && Number(strength) !== 0) {
+          pushActiveReference(references, seen, {
+            name,
+            strength: strength as number | string,
+            active,
+            node_id: node.id,
+            node_title: node.title,
+            node_type: node.type,
+          });
+        }
+      }
+
+      if (lowered.includes('lora') && isProbablyLoraName(value)) {
+        pushActiveReference(references, seen, {
+          name: value,
+          active: true,
+          node_id: node.id,
+          node_title: node.title,
+          node_type: node.type,
+        });
+      }
+    }
+  } else if (values && typeof values === 'object') {
+    for (const value of Object.values(values)) {
+      const list = extractLoraList(value);
+      if (list) {
+        list.forEach((entry) => pushActiveReference(references, seen, activeReferenceFromEntry(entry, node)));
+      }
+    }
+  }
+}
+
+export function extractActiveLoraReferencesFromWorkflow(
+  workflow: Workflow | null | undefined,
+): ActiveLoraReference[] {
+  if (!workflow) return [];
+  const references: ActiveLoraReference[] = [];
+  const seen = new Set<string>();
+  workflow.nodes?.forEach((node) => extractActiveLorasFromNode(node, references, seen));
+  workflow.definitions?.subgraphs?.forEach((subgraph) => {
+    subgraph.nodes?.forEach((node) => extractActiveLorasFromNode(node, references, seen));
+  });
+  return references;
+}
+
+export function serializeMultiLoraStackList(list: LoraManagerEntry[]): string {
+  const serialized = list
+    .map((entry) => normalizeLoraStackEntry(entry))
+    .filter((entry) => entry.name.trim().length > 0)
+    .map((entry) => ({
+      on: entry.active !== false,
+      lora: entry.name,
+      strength: coerceNumber(entry.strength, 1),
+    }));
+  return JSON.stringify(serialized);
 }
 
 export function findLoraListIndex(

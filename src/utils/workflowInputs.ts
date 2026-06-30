@@ -18,6 +18,49 @@ const DATE_PARTS = {
   s: (date: Date) => date.getSeconds(),
 };
 
+export const PROMPT_ASSISTANT_HELPER_MODE_NONE = 'None';
+export const PROMPT_ASSISTANT_HELPER_MODE_COUPLE_REGIONS = 'Couple regions';
+export const PROMPT_ASSISTANT_HELPER_MODE_BOUNDING_BOXES = 'Bounding boxes';
+
+export function normalizePromptAssistantHelperMode(value: unknown): string {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_');
+
+  if (
+    normalized === 'couple_regions' ||
+    normalized === 'couple_region' ||
+    normalized === 'regional_prompt' ||
+    normalized === 'regional' ||
+    normalized === 'regions' ||
+    normalized === 'region' ||
+    normalized === 'couple'
+  ) {
+    return PROMPT_ASSISTANT_HELPER_MODE_COUPLE_REGIONS;
+  }
+
+  if (
+    normalized === 'bounding_boxes' ||
+    normalized === 'bounding_box' ||
+    normalized === 'bbox' ||
+    normalized === 'bbox_prompt' ||
+    normalized === 'bounding_box_prompt'
+  ) {
+    return PROMPT_ASSISTANT_HELPER_MODE_BOUNDING_BOXES;
+  }
+
+  return PROMPT_ASSISTANT_HELPER_MODE_NONE;
+}
+
+export function normalizePromptAssistantProfileJsonOverride(value: unknown): string {
+  const text = String(value ?? '').trim();
+  if (!text || ['undefined', 'null', 'none'].includes(text.toLowerCase())) {
+    return '';
+  }
+  return text.startsWith('{') ? text : '';
+}
+
 const DATE_FORMAT_PATTERN =
   Object.keys(DATE_PARTS)
     .map((key) => `${key}${key}?`)
@@ -29,6 +72,366 @@ const ILLEGAL_FILENAME_CHARS =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+export type ForgeCoupleRegionalDirection = 'Auto' | 'Horizontal' | 'Vertical';
+
+export const FORGE_COUPLE_HORIZONTAL_ADVANCED_MAPPING =
+  '[[0.0,1.0,0.0,1.0,0.25],[0.00,0.50,0.0,1.0,1.0],[0.50,1.0,0.0,1.0,1.0]]';
+export const FORGE_COUPLE_VERTICAL_ADVANCED_MAPPING =
+  '[[0.0,1.0,0.0,1.0,0.25],[0.0,1.0,0.00,0.50,1.0],[0.0,1.0,0.50,1.0,1.0]]';
+
+const FORGE_COUPLE_WIDGET_INDEX = {
+  positive_text: 0,
+  backend: 3,
+  mode: 4,
+  direction: 5,
+  background: 6,
+  background_weight: 7,
+  separator: 8,
+  advanced_mapping: 9,
+  common_parser: 10,
+  include_definitions: 11,
+} as const;
+
+const PROMPT_ASSISTANT_WIDGET_INDEX = {
+  prompt: 8,
+  negative_prompt: 9,
+  helper_mode: 10,
+} as const;
+
+const FORGE_COUPLE_VERTICAL_PATTERN =
+  /\b(?:top[- ]?bottom|top[- ]?down|vertical|stacked|upper|lower|top|bottom|above|below|overhead|underneath)\b/gi;
+const FORGE_COUPLE_HORIZONTAL_PATTERN =
+  /\b(?:left[- ]?right|horizontal|side[- ]by[- ]side|left|right|beside|next\s+to)\b/gi;
+
+function countMatches(text: string, pattern: RegExp): number {
+  pattern.lastIndex = 0;
+  const matches = text.match(pattern);
+  pattern.lastIndex = 0;
+  return matches?.length ?? 0;
+}
+
+function getNonEmptyPromptLines(prompt: string): string[] {
+  return String(prompt || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function inferPromptAssistantForgeCoupleDirection(prompt: string): ForgeCoupleRegionalDirection {
+  const lines = getNonEmptyPromptLines(prompt);
+  if (lines.length === 0) return 'Auto';
+
+  const firstSubject = lines.length >= 3 ? lines[1] : lines[0] ?? '';
+  const secondSubject = lines.length >= 3 ? lines[2] : lines[1] ?? '';
+  const globalLine = lines.length >= 3 ? lines[0] : '';
+  const fullText = lines.join('\n');
+  let horizontalScore = 0;
+  let verticalScore = 0;
+
+  if (/\b(?:top|upper|above)\b/i.test(firstSubject) && /\b(?:bottom|lower|below)\b/i.test(secondSubject)) {
+    verticalScore += 5;
+  }
+  if (/\b(?:left)\b/i.test(firstSubject) && /\b(?:right)\b/i.test(secondSubject)) {
+    horizontalScore += 5;
+  }
+
+  verticalScore += countMatches(globalLine, FORGE_COUPLE_VERTICAL_PATTERN) * 2;
+  horizontalScore += countMatches(globalLine, FORGE_COUPLE_HORIZONTAL_PATTERN) * 2;
+  verticalScore += countMatches(fullText, FORGE_COUPLE_VERTICAL_PATTERN);
+  horizontalScore += countMatches(fullText, FORGE_COUPLE_HORIZONTAL_PATTERN);
+
+  if (verticalScore > horizontalScore) return 'Vertical';
+  if (horizontalScore > 0) return 'Horizontal';
+  return 'Auto';
+}
+
+function buildForgeCoupleAdvancedMapping(
+  direction: ForgeCoupleRegionalDirection,
+  lineCount: number,
+  background: 'None' | 'First Line',
+): string {
+  if (lineCount === 3 && background === 'First Line') {
+    return direction === 'Vertical'
+      ? FORGE_COUPLE_VERTICAL_ADVANCED_MAPPING
+      : FORGE_COUPLE_HORIZONTAL_ADVANCED_MAPPING;
+  }
+
+  const horizontal = direction !== 'Vertical';
+  const hasBackground = background === 'First Line';
+  const tileCount = Math.max(1, lineCount - (hasBackground ? 1 : 0));
+  const rows: number[][] = [];
+  if (hasBackground) rows.push([0.0, 1.0, 0.0, 1.0, 0.25]);
+  for (let tile = 0; tile < tileCount; tile += 1) {
+    const start = tile / tileCount;
+    const end = (tile + 1) / tileCount;
+    rows.push(horizontal
+      ? [start, end, 0.0, 1.0, 1.0]
+      : [0.0, 1.0, start, end, 1.0]);
+  }
+  return JSON.stringify(rows);
+}
+
+function isForgeCoupleRegionalPromptNode(node: WorkflowNode): boolean {
+  return node.type === 'ForgeCoupleRegionalPrompt';
+}
+
+function getLinkedForgeCoupleNode(
+  workflow: Workflow,
+  assistantNode: WorkflowNode,
+): WorkflowNode | null {
+  const nodesById = new Map(workflow.nodes.map((workflowNode) => [workflowNode.id, workflowNode]));
+
+  for (const link of workflow.links) {
+    const [, sourceNodeId, sourceSlot, targetNodeId, targetSlot] = link;
+    if (sourceNodeId !== assistantNode.id) continue;
+
+    const sourceOutput = assistantNode.outputs?.[sourceSlot];
+    if (sourceSlot !== 0 && sourceOutput?.name !== 'prompt') continue;
+
+    const targetNode = nodesById.get(targetNodeId);
+    if (!targetNode || !isForgeCoupleRegionalPromptNode(targetNode)) continue;
+
+    const targetInputName = targetNode.inputs?.[targetSlot]?.name;
+    if (targetInputName === 'positive_text') return targetNode;
+  }
+
+  const candidates = workflow.nodes.filter(isForgeCoupleRegionalPromptNode);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function setForgeCoupleWidgetValue(
+  values: unknown[],
+  widgetMap: Record<string, number> | null,
+  name: keyof typeof FORGE_COUPLE_WIDGET_INDEX,
+  value: unknown,
+): void {
+  const index = widgetMap?.[name] ?? FORGE_COUPLE_WIDGET_INDEX[name];
+  values[index] = value;
+}
+
+function updateForgeCoupleNodeForAssistantPrompt(
+  workflow: Workflow,
+  forgeNode: WorkflowNode,
+  prompt: string,
+): WorkflowNode {
+  const direction = inferPromptAssistantForgeCoupleDirection(prompt);
+  const lineCount = getNonEmptyPromptLines(prompt).length;
+  const background = lineCount >= 3 ? 'First Line' : 'None';
+  const advancedMapping = buildForgeCoupleAdvancedMapping(direction, lineCount, background);
+  const widgetMap = getNodeWidgetIndexMap(workflow, forgeNode);
+
+  if (!Array.isArray(forgeNode.widgets_values)) {
+    const nextValues = {
+      ...(isRecord(forgeNode.widgets_values) ? forgeNode.widgets_values : {}),
+      positive_text: prompt,
+      backend: 'anima_mask',
+      mode: 'Basic',
+      direction,
+      background,
+      background_weight: 0.25,
+      separator: '\\n',
+      advanced_mapping: advancedMapping,
+      common_parser: 'Off',
+      include_definitions: true,
+    };
+    return { ...forgeNode, widgets_values: nextValues };
+  }
+
+  const nextValues = [...forgeNode.widgets_values];
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'positive_text', prompt);
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'backend', 'anima_mask');
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'mode', 'Basic');
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'direction', direction);
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'background', background);
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'background_weight', 0.25);
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'separator', '\\n');
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'advanced_mapping', advancedMapping);
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'common_parser', 'Off');
+  setForgeCoupleWidgetValue(nextValues, widgetMap, 'include_definitions', true);
+
+  return { ...forgeNode, widgets_values: nextValues };
+}
+
+export interface PromptAssistantForgeCoupleAutomationResult {
+  workflow: Workflow;
+  forgeNodeId: number;
+  direction: ForgeCoupleRegionalDirection;
+}
+
+export function applyPromptAssistantForgeCoupleAutomation(
+  workflow: Workflow | null,
+  assistantNode: WorkflowNode,
+  prompt: string,
+  helperMode: unknown,
+): PromptAssistantForgeCoupleAutomationResult | null {
+  if (!workflow) return null;
+  if (normalizePromptAssistantHelperMode(helperMode) !== PROMPT_ASSISTANT_HELPER_MODE_COUPLE_REGIONS) {
+    return null;
+  }
+
+  const cleanPrompt = String(prompt || '').trim();
+  if (!cleanPrompt) return null;
+  if (getNonEmptyPromptLines(cleanPrompt).length < 2) return null;
+
+  const forgeNode = getLinkedForgeCoupleNode(workflow, assistantNode);
+  if (!forgeNode) return null;
+
+  const updatedForgeNode = updateForgeCoupleNodeForAssistantPrompt(workflow, forgeNode, cleanPrompt);
+  const nextNodes = workflow.nodes.map((workflowNode) =>
+    workflowNode.id === forgeNode.id ? updatedForgeNode : workflowNode,
+  );
+
+  return {
+    workflow: { ...workflow, nodes: nextNodes },
+    forgeNodeId: forgeNode.id,
+    direction: inferPromptAssistantForgeCoupleDirection(cleanPrompt),
+  };
+}
+
+function getWidgetValueByName(
+  workflow: Workflow,
+  node: WorkflowNode,
+  name: string,
+  fallbackIndex?: number,
+): unknown {
+  const values = node.widgets_values;
+  if (Array.isArray(values)) {
+    const widgetMap = getNodeWidgetIndexMap(workflow, node);
+    const index = widgetMap?.[name] ?? fallbackIndex;
+    return index === undefined ? undefined : values[index];
+  }
+  if (isRecord(values)) {
+    return values[name] ?? (fallbackIndex === undefined ? undefined : values[String(fallbackIndex)]);
+  }
+  return undefined;
+}
+
+function readPromptAssistantQueuePrompt(
+  workflow: Workflow,
+  assistantNode: WorkflowNode,
+): { prompt: string; helperMode: string } {
+  let prompt = normalizePromptAssistantTextInput(
+    getWidgetValueByName(workflow, assistantNode, 'prompt', PROMPT_ASSISTANT_WIDGET_INDEX.prompt),
+  );
+  let negativePrompt = normalizePromptAssistantTextInput(
+    getWidgetValueByName(workflow, assistantNode, 'negative_prompt', PROMPT_ASSISTANT_WIDGET_INDEX.negative_prompt),
+  );
+  if (shouldPromotePromptAssistantNegativeToPrompt(prompt, negativePrompt)) {
+    prompt = negativePrompt;
+    negativePrompt = '';
+  }
+
+  const helperMode = normalizePromptAssistantHelperMode(
+    getWidgetValueByName(workflow, assistantNode, 'helper_mode', PROMPT_ASSISTANT_WIDGET_INDEX.helper_mode),
+  );
+  return { prompt, helperMode };
+}
+
+export function applyPromptAssistantForgeCoupleQueueAutomation(
+  workflow: Workflow,
+): PromptAssistantForgeCoupleAutomationResult & { changed: boolean } {
+  let nextWorkflow = workflow;
+  let lastForgeNodeId = -1;
+  let lastDirection: ForgeCoupleRegionalDirection = 'Auto';
+  let changed = false;
+
+  for (const originalNode of workflow.nodes) {
+    if (!isPromptAssistantGenerateNodeType(originalNode.type, originalNode.type)) continue;
+    const assistantNode = nextWorkflow.nodes.find((node) => node.id === originalNode.id) ?? originalNode;
+    const { prompt, helperMode } = readPromptAssistantQueuePrompt(nextWorkflow, assistantNode);
+    const automation = applyPromptAssistantForgeCoupleAutomation(
+      nextWorkflow,
+      assistantNode,
+      prompt,
+      helperMode,
+    );
+    if (!automation) continue;
+
+    nextWorkflow = automation.workflow;
+    lastForgeNodeId = automation.forgeNodeId;
+    lastDirection = automation.direction;
+    changed = true;
+  }
+
+  return {
+    workflow: nextWorkflow,
+    forgeNodeId: lastForgeNodeId,
+    direction: lastDirection,
+    changed,
+  };
+}
+
+export const DYNAMIC_COMBO_TYPE = 'COMFY_DYNAMICCOMBO_V3';
+export const DYNAMIC_COMBO_WIDGET_NAME_OPTION = '__dynamicComboWidgetName';
+
+function dynamicComboOptionKey(option: unknown): string | null {
+  if (isRecord(option)) {
+    const key = option.key;
+    if (typeof key === 'string' || typeof key === 'number') return String(key);
+    return null;
+  }
+  if (typeof option === 'string' || typeof option === 'number') {
+    return String(option);
+  }
+  return null;
+}
+
+export function getDynamicComboOptionKeys(
+  inputOptions?: Record<string, unknown> | null,
+): string[] {
+  const rawOptions = inputOptions?.options;
+  if (!Array.isArray(rawOptions)) return [];
+  return rawOptions
+    .map(dynamicComboOptionKey)
+    .filter((key): key is string => Boolean(key));
+}
+
+export function isDynamicComboInput(
+  typeOrOptions: string | unknown[],
+  inputOptions?: Record<string, unknown> | null,
+): boolean {
+  if (Array.isArray(typeOrOptions)) return false;
+  return String(typeOrOptions).toUpperCase() === DYNAMIC_COMBO_TYPE &&
+    getDynamicComboOptionKeys(inputOptions).length > 0;
+}
+
+export function getComboComparableValue(
+  value: unknown,
+  widgetName?: string,
+): unknown {
+  if (!isRecord(value)) return value;
+
+  if (widgetName) {
+    const named = value[widgetName];
+    if (typeof named === 'string' || typeof named === 'number') return named;
+  }
+
+  const stringValues = Object.values(value).filter(
+    (entry): entry is string => typeof entry === 'string',
+  );
+  return stringValues.length === 1 ? stringValues[0] : value;
+}
+
+export function serializeDynamicComboWidgetValue(
+  widgetName: string,
+  selectedValue: unknown,
+  currentValue?: unknown,
+): unknown {
+  const comparable = getComboComparableValue(selectedValue, widgetName);
+  if (comparable === undefined || comparable === null) return selectedValue;
+  return {
+    ...(isRecord(currentValue) ? currentValue : {}),
+    [widgetName]: String(comparable),
+  };
+}
+
+export function normalizeDynamicComboInputValue(
+  value: unknown,
+  widgetName: string,
+): unknown {
+  return serializeDynamicComboWidgetValue(widgetName, value, value);
 }
 
 function formatDateToken(text: string, date: Date): string {
@@ -231,6 +634,7 @@ export function isWidgetInputType(typeOrOptions: string | unknown[]): boolean {
     normalized === 'FLOAT' ||
     normalized === 'BOOLEAN' ||
     normalized === 'STRING' ||
+    normalized === DYNAMIC_COMBO_TYPE ||
     normalized.includes('AUTOCOMPLETE_TEXT_LORAS') ||
     normalized.includes('AUTOCOMPLETE_TEXT_PROMPT');
 }
@@ -335,10 +739,12 @@ function getComboBase(value: string): string {
 
 export function resolveComboOption(
   value: unknown,
-  options: unknown[]
+  options: unknown[],
+  widgetName?: string,
 ): unknown | undefined {
   if (!Array.isArray(options) || options.length === 0) return undefined;
-  const normalized = normalizeWidgetValue(value, options, { comboIndexToValue: true });
+  const comparable = getComboComparableValue(value, widgetName);
+  const normalized = normalizeWidgetValue(comparable, options, { comboIndexToValue: true });
   const normalizedString = String(normalized);
   const normalizedBase = getComboBase(normalizedString);
 
@@ -366,7 +772,7 @@ export function resolveComboOption(
 
 export function isValueCompatible(value: unknown, typeOrOptions: string | unknown[]): boolean {
   if (Array.isArray(typeOrOptions)) {
-    const asString = String(value);
+    const asString = String(getComboComparableValue(value));
     return typeOrOptions.some((opt) => String(opt) === asString);
   }
 
@@ -500,6 +906,39 @@ function looksLikeStructuredPositivePrompt(value: string): boolean {
   );
 }
 
+function promptAssistantPositivePromptScore(value: unknown): number {
+  const text = normalizePromptAssistantTextInput(value).trim();
+  if (!text) return 0;
+  if (looksLikeStructuredPositivePrompt(text)) return 10;
+
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 2) return 0;
+
+  let score = 1;
+  const subjectLineCount = lines.filter((line) =>
+    /\b(?:[1-9]\d*\s*(?:girls?|boys?)|[1-9]\d*girls?|[1-9]\d*boys?|1girl|1boy|women|woman|men|man|female focus|male focus)\b/i.test(line)
+  ).length;
+  if (subjectLineCount >= 2) score += 2;
+  if (/\b(?:left[- ]right|top[- ]bottom|composition|shared scene|background|foreground|region|regional)\b/i.test(text)) {
+    score += 3;
+  }
+  if (/\b(?:bbox|high_level_description|compositional_deconstruction)\b/i.test(text)) {
+    score += 4;
+  }
+  return score;
+}
+
+function shouldPromotePromptAssistantNegativeToPrompt(
+  prompt: unknown,
+  negativePrompt: unknown,
+): boolean {
+  const negativeScore = promptAssistantPositivePromptScore(negativePrompt);
+  if (negativeScore <= 0) return false;
+  const promptScore = promptAssistantPositivePromptScore(prompt);
+  if (normalizePromptAssistantTextInput(prompt).trim() === '') return true;
+  return negativeScore >= 4 && negativeScore > promptScore;
+}
+
 function parseLeadingJsonObject(value: string): Record<string, unknown> | null {
   const text = value.trim();
   if (!text.startsWith('{')) return null;
@@ -563,28 +1002,28 @@ function structuredPositivePromptToText(value: unknown): string | null {
 }
 
 function applyPromptAssistantQueueDefaults(
+  _workflow: Workflow,
   classType: string,
   node: WorkflowNode,
   inputs: Record<string, unknown>,
 ): void {
   if (!isPromptAssistantGenerateNodeType(classType, node.type)) return;
 
-  inputs.idea = '';
+  inputs.idea = normalizePromptAssistantTextInput(inputs.idea);
   inputs.context = '';
   inputs.image_caption = '';
   inputs.extra_instructions = '';
   inputs.prompt = normalizePromptAssistantTextInput(inputs.prompt);
   inputs.negative_prompt = normalizePromptAssistantTextInput(inputs.negative_prompt);
-  if (
-    String(inputs.prompt).trim() === '' &&
-    looksLikeStructuredPositivePrompt(String(inputs.negative_prompt))
-  ) {
+  inputs.profile_json_override = normalizePromptAssistantProfileJsonOverride(inputs.profile_json_override);
+  if (shouldPromotePromptAssistantNegativeToPrompt(inputs.prompt, inputs.negative_prompt)) {
     inputs.prompt = inputs.negative_prompt;
     inputs.negative_prompt = '';
   }
   if (inputs.helper_mode == null || String(inputs.helper_mode).trim() === '') {
-    inputs.helper_mode = 'None';
+    inputs.helper_mode = PROMPT_ASSISTANT_HELPER_MODE_NONE;
   }
+  inputs.helper_mode = normalizePromptAssistantHelperMode(inputs.helper_mode);
   inputs.emit_ui_text = true;
   inputs.auto_generate_on_queue = false;
 }
@@ -646,7 +1085,7 @@ export function buildWorkflowPromptInputs(
       const inputDef = typeDef.input.required?.[name] || typeDef.input.optional?.[name];
       if (!inputDef) continue;
 
-      const [typeOrOptions] = inputDef;
+      const [typeOrOptions, inputOptions] = inputDef;
       const inputEntry = node.inputs.find((i) => i.name === name);
       const isConnected = inputEntry?.link != null;
       const isWidgetToggle = Boolean(inputEntry?.widget) && !isConnected;
@@ -675,7 +1114,15 @@ export function buildWorkflowPromptInputs(
         } else if (indexToUse !== undefined && !isConnected && !(name in inputs)) {
           const rawValue = getWidgetValue(node, name, indexToUse);
           if (rawValue !== undefined) {
-            if (Array.isArray(typeOrOptions)) {
+            if (isPromptAssistantGenerateNodeType(classType, node.type) && name === 'helper_mode') {
+              inputs[name] = normalizePromptAssistantHelperMode(rawValue);
+            } else if (isDynamicComboInput(typeOrOptions, inputOptions)) {
+              inputs[name] = finalizeInputValue(
+                workflow,
+                name,
+                normalizeDynamicComboInputValue(rawValue, name)
+              );
+            } else if (Array.isArray(typeOrOptions)) {
               inputs[name] = finalizeInputValue(
                 workflow,
                 name,
@@ -767,7 +1214,7 @@ export function buildWorkflowPromptInputs(
 
   appendLoraManagerInputs(node, inputs, widgetValuesArray, widgetIndexMap);
   appendTriggerWordToggleInputs(node, inputs, widgetValuesArray, widgetIndexMap);
-  applyPromptAssistantQueueDefaults(classType, node, inputs);
+  applyPromptAssistantQueueDefaults(workflow, classType, node, inputs);
 
   return inputs;
 }

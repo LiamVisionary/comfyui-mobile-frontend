@@ -1,7 +1,11 @@
 import type { StateCreator } from 'zustand';
 import * as api from '@/api/client';
 import type { QueueState, ShadowQueueJob } from '../useQueue';
-import { capWorkflowDiffs } from './queueHelpers';
+import {
+  capWorkflowDiffs,
+  extractPromptWorkflowMetadata,
+  withPromptWorkflowMetadata,
+} from './queueHelpers';
 
 /**
  * Shadow-queue recovery: tracks queued prompts as "shadow jobs" so that, after a
@@ -12,6 +16,7 @@ import { capWorkflowDiffs } from './queueHelpers';
 export type QueueRecoverySlice = Pick<
   QueueState,
   | 'workflowDiffs'
+  | 'promptWorkflows'
   | 'shadowQueueJobs'
   | 'recoverableJobIds'
   | 'autoRestoredPromptIds'
@@ -31,6 +36,7 @@ export const createQueueRecoverySlice: StateCreator<
   QueueRecoverySlice
 > = (set, get) => ({
   workflowDiffs: {},
+  promptWorkflows: {},
   shadowQueueJobs: {},
   recoverableJobIds: [],
   autoRestoredPromptIds: {},
@@ -63,6 +69,11 @@ export const createQueueRecoverySlice: StateCreator<
         state.running.some((existing) => existing.prompt_id === promptId) ||
         state.pending.some((existing) => existing.prompt_id === promptId) ||
         state.completing.some((existing) => existing.prompt_id === promptId);
+      const promptWorkflows = withPromptWorkflowMetadata(
+        state.promptWorkflows,
+        promptId,
+        extractPromptWorkflowMetadata(request.extra_data),
+      );
       return {
         // Make the Run click visible immediately. Comfy can accept a prompt and
         // then move it through /queue before the next mobile poll observes it;
@@ -83,6 +94,7 @@ export const createQueueRecoverySlice: StateCreator<
             sessionId: options?.sessionId,
           },
         },
+        promptWorkflows,
         recoverableJobIds: state.recoverableJobIds.filter((id) => id !== promptId),
       };
     });
@@ -190,11 +202,16 @@ export const createQueueRecoverySlice: StateCreator<
           // The restored job re-enqueues the identical workflow, so its
           // diff/prompt-preview is still valid — carry it to the new id.
           const workflowDiffs = { ...current.workflowDiffs };
+          const promptWorkflows = { ...current.promptWorkflows };
           const queueMetadata = { ...current.queueMetadata };
           const carriedDiff = workflowDiffs[job.originalPromptId];
           if (carriedDiff) {
             delete workflowDiffs[job.originalPromptId];
             workflowDiffs[newPromptId] = carriedDiff;
+          }
+          if (Object.prototype.hasOwnProperty.call(promptWorkflows, job.originalPromptId)) {
+            promptWorkflows[newPromptId] = promptWorkflows[job.originalPromptId];
+            delete promptWorkflows[job.originalPromptId];
           }
           const carriedMetadata = queueMetadata[job.originalPromptId];
           if (carriedMetadata) {
@@ -207,6 +224,7 @@ export const createQueueRecoverySlice: StateCreator<
           return {
             shadowQueueJobs,
             workflowDiffs,
+            promptWorkflows,
             queueMetadata,
             autoRestoredPromptIds: auto
               ? {

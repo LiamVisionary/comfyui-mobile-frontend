@@ -14,6 +14,7 @@ import { useBookmarksStore } from '../useBookmarks';
 import { useWorkflowErrorsStore } from '../useWorkflowErrors';
 import { useSeedStore } from '../useSeed';
 import { queueAndGetEmbeddedWorkflow } from './helpers/queueAndGetEmbeddedWorkflow';
+import { clearWorkflowEncryptionKey, setWorkflowEncryptionKey } from '@/utils/workflowEncryption';
 
 function makeNode(id: number, overrides?: Partial<WorkflowNode>): WorkflowNode {
   return {
@@ -103,6 +104,37 @@ const comboNodeTypes: NodeTypes = {
   }
 };
 
+const dynamicComboNodeTypes: NodeTypes = {
+  ColorTransfer: {
+    input: {
+      required: {
+        method: [['reinhard_lab'], {}],
+        source_stats: [
+          'COMFY_DYNAMICCOMBO_V3',
+          {
+            options: [
+              { key: 'per_frame', inputs: { required: {} } },
+              { key: 'uniform', inputs: { required: {} } },
+            ],
+          },
+        ],
+        strength: ['FLOAT', { default: 1 }],
+      },
+    },
+    input_order: {
+      required: ['method', 'source_stats', 'strength'],
+      optional: [],
+    },
+    output: ['IMAGE'],
+    output_name: ['IMAGE'],
+    name: 'ColorTransfer',
+    display_name: 'ColorTransfer',
+    description: '',
+    python_module: '',
+    category: 'test'
+  }
+};
+
 const queueNodeTypes: NodeTypes = {
   ...nodeTypes,
   Any: {
@@ -118,6 +150,7 @@ const queueNodeTypes: NodeTypes = {
 };
 
 beforeEach(() => {
+  setWorkflowEncryptionKey('vitest-workflow-unlock');
   useWorkflowStore.setState({
     workflow: null,
     originalWorkflow: null,
@@ -159,6 +192,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearWorkflowEncryptionKey();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1337,6 +1371,32 @@ describe('useWorkflow editing actions', () => {
     expect(next.workflow?.nodes.find((node) => node.id === 1)?.widgets_values).toEqual([
       'models/main/model.safetensors'
     ]);
+  });
+
+  it('normalizes COMFY_DYNAMICCOMBO_V3 scalar widget values on load', () => {
+    const wf = makeWorkflow([
+      makeNode(1, {
+        type: 'ColorTransfer',
+        inputs: [
+          { name: 'method', type: 'COMBO', link: null, widget: { name: 'method' } },
+          { name: 'source_stats', type: 'COMFY_DYNAMICCOMBO_V3', link: null, widget: { name: 'source_stats' } },
+          { name: 'strength', type: 'FLOAT', link: null, widget: { name: 'strength' } },
+        ],
+        widgets_values: ['reinhard_lab', 'per_frame', 0.8]
+      })
+    ], []);
+    useWorkflowStore.setState({
+      nodeTypes: dynamicComboNodeTypes
+    });
+
+    useWorkflowStore.getState().loadWorkflow(wf, 'dynamic-combo.json');
+
+    expect(useWorkflowStore.getState().workflow?.nodes[0]?.widgets_values).toEqual([
+      'reinhard_lab',
+      { source_stats: 'per_frame' },
+      0.8
+    ]);
+    expect(useWorkflowErrorsStore.getState().nodeErrors).toEqual({});
   });
 
   it('ignores missing combo options on bypassed nodes when loading', () => {

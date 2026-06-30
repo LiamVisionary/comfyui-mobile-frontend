@@ -610,7 +610,7 @@ export const OutputsPanel = memo(function OutputsPanel({ visible }: { visible: b
       });
     } catch (err) {
       console.error('Failed to load workflow from file:', err);
-      window.alert('Failed to load workflow from file.');
+      window.alert(err instanceof Error ? err.message : 'Failed to load workflow from file.');
     }
   };
 

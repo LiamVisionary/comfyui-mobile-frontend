@@ -13,7 +13,12 @@ import { resolveUploadFolder } from "./outputPickerUtils";
 import type { AssetSource } from "@/api/client";
 import { useCoarsePointer } from "@/hooks/useCoarsePointer";
 import { themeColors } from "@/theme/colors";
-import { resolveComboOption } from "@/utils/workflowInputs";
+import {
+  DYNAMIC_COMBO_WIDGET_NAME_OPTION,
+  getComboComparableValue,
+  resolveComboOption,
+  serializeDynamicComboWidgetValue,
+} from "@/utils/workflowInputs";
 import type { ModelLookup } from "@/api/loraManagerClient";
 import {
   ModelOption,
@@ -130,20 +135,33 @@ export function ComboControl({
   const [inputPickerOpen, setInputPickerOpen] = useState(false);
   const stripSafetensorsSuffix = Boolean(getOption("stripSafetensorsSuffix"));
   const modelLookup = getOption("modelLookup") as ModelLookup | undefined;
+  const dynamicComboWidgetName = getOption(DYNAMIC_COMBO_WIDGET_NAME_OPTION) as string | undefined;
   const isModelMode = typeof modelLookup === "function";
   const hasNullChoice = rawChoices.some((opt) => opt === null);
   const choices = useMemo(
-    () => rawChoices.filter((opt) => opt !== null).map((opt) => String(opt)),
+    () =>
+      rawChoices
+        .filter((opt) => opt !== null)
+        .map((opt) => {
+          if (opt && typeof opt === "object" && "key" in opt) {
+            const key = (opt as { key?: unknown }).key;
+            if (typeof key === "string" || typeof key === "number") {
+              return String(key);
+            }
+          }
+          return String(opt);
+        }),
     [rawChoices],
   );
   const mergedChoices = useMemo(
     () => Array.from(new Set([...choices, ...uploadedChoices])),
     [choices, uploadedChoices],
   );
+  const comparableValue = getComboComparableValue(value, dynamicComboWidgetName ?? name);
   const rawValueString =
-    value === null ? NULL_OPTION_VALUE : String(value ?? "");
+    value === null ? NULL_OPTION_VALUE : String(comparableValue ?? "");
   const rawBase = rawValueString.split(/[\\/]/).pop() ?? rawValueString;
-  const resolvedValue = resolveComboOption(value, mergedChoices);
+  const resolvedValue = resolveComboOption(value, mergedChoices, dynamicComboWidgetName ?? name);
   const resolvedValueString =
     resolvedValue === undefined ? null : String(resolvedValue);
   const hasValueMatch =
@@ -324,7 +342,12 @@ export function ComboControl({
 
   const handleSelectChange = (next: SelectOption | null) => {
     if (!next) return;
-    onChange(next.value === NULL_OPTION_VALUE ? null : next.value);
+    const nextValue = next.value === NULL_OPTION_VALUE ? null : next.value;
+    onChange(
+      dynamicComboWidgetName && nextValue !== null
+        ? serializeDynamicComboWidgetValue(dynamicComboWidgetName, nextValue, value)
+        : nextValue
+    );
   };
 
   const handleModalSelectChange = (next: SelectOption | null) => {

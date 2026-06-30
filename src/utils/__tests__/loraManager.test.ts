@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkflowNode } from '@/api/types';
+import type { Workflow, WorkflowNode } from '@/api/types';
 import {
   applyLoraValuesToText,
   createDefaultLoraEntry,
+  createDefaultLoraStackEntry,
+  extractActiveLoraReferencesFromWorkflow,
+  extractMultiLoraStackList,
   extractLoraList,
   findLoraListIndex,
   isLoraChainProviderNodeType,
@@ -11,9 +14,12 @@ import {
   isLoraList,
   isLoraLoaderNodeType,
   isLoraManagerNodeType,
+  isMfluxLorasLoaderNodeType,
+  isMultiLoraStackNodeType,
   mergeLoras,
   normalizeLoraManagerName,
   normalizeLoraEntry,
+  serializeMultiLoraStackList,
 } from '../loraManager';
 
 function makeNode(id: number, type: string, widgetsValues: unknown[]): WorkflowNode {
@@ -33,6 +39,18 @@ function makeNode(id: number, type: string, widgetsValues: unknown[]): WorkflowN
   };
 }
 
+function makeWorkflow(nodes: WorkflowNode[]): Workflow {
+  return {
+    last_node_id: nodes.length,
+    last_link_id: 0,
+    nodes,
+    links: [],
+    groups: [],
+    config: {},
+    version: 0.4,
+  };
+}
+
 describe('loraManager utilities', () => {
   it('detects supported lora manager node types', () => {
     expect(isLoraLoaderNodeType('Lora Loader (LoraManager)')).toBe(true);
@@ -41,6 +59,8 @@ describe('loraManager utilities', () => {
     expect(isLoraDirectProviderNodeType('WanVideo Lora Select (LoraManager)')).toBe(true);
     expect(isLoraCyclerNodeType('Custom Lora Cycler (LoraManager)')).toBe(true);
     expect(isLoraManagerNodeType('Lora Stacker (LoraManager)')).toBe(true);
+    expect(isMultiLoraStackNodeType('MultiLoRAStackModelOnly')).toBe(true);
+    expect(isMfluxLorasLoaderNodeType('MfluxLorasLoader')).toBe(true);
     expect(isLoraManagerNodeType('CheckpointLoaderSimple')).toBe(false);
   });
 
@@ -110,5 +130,76 @@ describe('loraManager utilities', () => {
     expect(result).toContain('<lora:a:0.55:0.45>');
     expect(result).toContain('<lora:c:1.10>');
     expect(result).not.toContain('<lora:b:');
+  });
+
+  it('parses and serializes Multi LoRA Stack values without stripping extensions', () => {
+    const raw = '[{"on":true,"lora":"anima-turbo-lora-v0.2.safetensors","strength":0.85}]';
+    const parsed = extractMultiLoraStackList(raw);
+
+    expect(parsed).toEqual([
+      {
+        name: 'anima-turbo-lora-v0.2.safetensors',
+        strength: 0.85,
+        clipStrength: 0.85,
+        active: true,
+        expanded: false,
+      },
+    ]);
+    expect(createDefaultLoraStackEntry(['foo.safetensors'])).toMatchObject({
+      name: 'foo.safetensors',
+      active: true,
+    });
+    expect(serializeMultiLoraStackList(parsed ?? [])).toBe(raw);
+  });
+
+  it('extracts active loras from MultiLoRAStack, Power Lora, and standard loader nodes', () => {
+    const workflow = makeWorkflow([
+      makeNode(11, 'MultiLoRAStackModelOnly', [
+        JSON.stringify([
+          { on: true, lora: 'anima-turbo-lora-v0.2.safetensors', strength: 0.85 },
+          { on: false, lora: 'disabled.safetensors', strength: 1 },
+        ]),
+      ]),
+      makeNode(22, 'Power Lora Loader (rgthree)', [
+        { on: true, lora: 'characters/himawari_v25-000007.safetensors', strength: 0.7 },
+        { on: true, lora: 'zero.safetensors', strength: 0 },
+      ]),
+      makeNode(33, 'LoraLoaderModelOnly', ['style.safetensors', 0.5]),
+      makeNode(44, 'MfluxLorasLoader', [
+        'characters/naruto.safetensors',
+        0.6,
+        'None',
+        1,
+        'styles/anime.safetensors',
+        0.35,
+      ]),
+    ]);
+
+    expect(extractActiveLoraReferencesFromWorkflow(workflow)).toEqual([
+      expect.objectContaining({
+        name: 'anima-turbo-lora-v0.2.safetensors',
+        strength: 0.85,
+        node_id: 11,
+      }),
+      expect.objectContaining({
+        name: 'characters/himawari_v25-000007.safetensors',
+        strength: 0.7,
+        node_id: 22,
+      }),
+      expect.objectContaining({
+        name: 'style.safetensors',
+        node_id: 33,
+      }),
+      expect.objectContaining({
+        name: 'characters/naruto.safetensors',
+        strength: 0.6,
+        node_id: 44,
+      }),
+      expect.objectContaining({
+        name: 'styles/anime.safetensors',
+        strength: 0.35,
+        node_id: 44,
+      }),
+    ]);
   });
 });

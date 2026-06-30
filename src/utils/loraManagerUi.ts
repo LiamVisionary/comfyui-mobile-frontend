@@ -1,15 +1,37 @@
-const DEFAULT_LORA_MANAGER_UI_PATH = "/loras";
+const DEFAULT_LORA_MANAGER_UI_PATH = "/?tab=models#models";
+const INHERITED_QUERY_PARAMS = ["token"];
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
-function toAllowedAbsoluteUrl(value: string): string | null {
-  if (typeof window === "undefined") return value;
+function toAllowedAbsoluteUrl(value: string): URL | null {
   try {
-    const nextUrl = new URL(value, window.location.origin);
+    const nextUrl = new URL(
+      value,
+      typeof window === "undefined" ? undefined : window.location.origin,
+    );
     if (!ALLOWED_PROTOCOLS.has(nextUrl.protocol)) return null;
-    return nextUrl.toString();
+    return nextUrl;
   } catch {
     return null;
   }
+}
+
+function inheritSameOriginQueryParams(url: URL): URL {
+  if (typeof window === "undefined" || url.origin !== window.location.origin) {
+    return url;
+  }
+  const currentParams = new URLSearchParams(window.location.search);
+  INHERITED_QUERY_PARAMS.forEach((key) => {
+    const value = currentParams.get(key);
+    if (value && !url.searchParams.has(key)) {
+      url.searchParams.set(key, value);
+    }
+  });
+  return url;
+}
+
+function resolveLoraManagerUiUrl(value: string): string | null {
+  const resolved = toAllowedAbsoluteUrl(value);
+  return resolved ? inheritSameOriginQueryParams(resolved).toString() : null;
 }
 
 export function getLoraManagerUiUrl(): string {
@@ -20,7 +42,7 @@ export function getLoraManagerUiUrl(): string {
       ? import.meta.env.VITE_LORA_MANAGER_UI_URL.trim()
       : "";
   if (envUrl) {
-    const resolved = toAllowedAbsoluteUrl(envUrl);
+    const resolved = resolveLoraManagerUiUrl(envUrl);
     if (resolved) return resolved;
   }
 
@@ -29,11 +51,11 @@ export function getLoraManagerUiUrl(): string {
       ? window.localStorage.getItem("comfyui-mobile-lora-manager-ui-url")?.trim() ?? ""
       : "";
   if (localOverride) {
-    const resolved = toAllowedAbsoluteUrl(localOverride);
+    const resolved = resolveLoraManagerUiUrl(localOverride);
     if (resolved) return resolved;
   }
 
-  const fallback = toAllowedAbsoluteUrl(DEFAULT_LORA_MANAGER_UI_PATH);
+  const fallback = resolveLoraManagerUiUrl(DEFAULT_LORA_MANAGER_UI_PATH);
   return fallback ?? DEFAULT_LORA_MANAGER_UI_PATH;
 }
 

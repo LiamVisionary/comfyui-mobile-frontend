@@ -24,6 +24,11 @@ export function resolveFilePath(file: FileItem, source?: AssetSource): string {
   return file.id.startsWith(prefix) ? file.id.slice(prefix.length) : file.id;
 }
 
+export function isNativeBigLoveKlein3OutputPath(path: string): boolean {
+  const filename = path.split('/').pop() ?? path;
+  return /^biglove_klein3_mlx_[a-f0-9]+\.png$/i.test(filename);
+}
+
 export function resolveViewerItemWorkflowLoad(
   item: ViewerImage,
   historyWorkflowByFileId?: ReadonlyMap<string, { workflow?: Workflow; promptId: string; hidden?: boolean }>,

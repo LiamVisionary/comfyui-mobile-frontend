@@ -117,7 +117,7 @@ describe('queueUtils', () => {
     ];
 
     expect(getBatchSources('prompt-1', list)).toEqual([
-      '/view?filename=saved-video.mp4&subfolder=&type=output',
+      '/comfy/view?filename=saved-video.mp4&subfolder=&type=output',
     ]);
   });
 });
