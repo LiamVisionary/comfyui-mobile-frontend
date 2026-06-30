@@ -37,6 +37,7 @@ Confirmed contention finding from 2026-06-30:
 - The same native compact-prompt 960x1440 / 10-step path can swing from about 99.8s generate under active desktop/local-service contention to about 51.1s generate after isolating the Krea sidecar from an idle-hot Anima lane. The isolated run reported about 12.1s pipeline load / 51.1s generate / 63.3s total.
 - Memory pressure was not the limiter in this run; system stats still showed about 81 GB free RAM. The visible pressure was competing CPU/GPU/process activity, including WindowServer, Open Generative AI GPU helper, Splashtop, and previously the Anima Comfy lane.
 - Benchmark reports must include the top process-pressure snapshot, not only the sidecar fast-path report, because the fast path can be correct while wall time is still ruined by contention.
+- Implemented `KREA2_MLX_FOCUS_MODE=1` in the native Comfy node. A real Comfy API run at 960x1440 / 10 steps / seed `794015397137290` / saved workflow prompt / no LoRA completed in about 58.35s wall, with sidecar timings of about 5.40s pipeline / 51.93s generate / 57.40s total. The log confirmed Anima port `8198` was paused and resumed during generation.
 
 ## What Sampler Are We Using?
 
@@ -92,6 +93,7 @@ Confirmed improvements or useful instrumentation:
 - Keep `KREA2_MLX_RECYCLE_SIDECAR_AFTER_RUN=1` for now. Warm repeats in one loaded process drifted from about 50s to about 90-130s.
 - Keep `start_new_session=True` when spawning the sidecar so it survives the launcher process correctly.
 - Do not demote the sidecar with `taskpolicy -B` unless explicitly setting `KREA2_MLX_BACKGROUND_SIDECAR=1`.
+- Keep `KREA2_MLX_FOCUS_MODE=1` for the native Krea2 node unless it proves disruptive. It pauses configured idle sibling Comfy lanes, currently port `8198` for Anima, only while the Krea sidecar `/generate` call is running. It skips Comfy lanes with running/pending queue work and resumes paused pids afterward. This is a contention fix, not a quality or sampling change.
 
 ## Dead Ends / Do Not Retry Blindly
 
@@ -110,6 +112,7 @@ Confirmed non-working or worse:
 - Red Mix bf16 fused-after-load was slower than the MXFP8 fused path, about 104.3s generate at 960x1440 / 10 steps / no LoRA. Higher precision is not a speed win on this machine.
 - Red Mix MXFP8 unfused was slower than the fused MXFP8 path, about 113.0s generate at 960x1440 / 10 steps / no LoRA. The fused QKV/gate and MLP gate/up packing should stay.
 - MLX cache limit 2 GB gave only a small/noisy improvement, about 49.4s generate. MLX cache limit 4 GB was much worse, about 95.9s generate. Keep normal default at 0 GB unless repeated evidence says 2 GB is stable.
+- A fresh cache-limit 2 GB target run under active system pressure was worse: about 76.0s generate / 81.5s total. The run was contaminated by heavy Claw/Z-Image API contention, but it reinforces that 2 GB is not a safe default.
 - Compiling the entire fixed denoise loop, instead of only `forward_prepared_vectors`, was worse at target shape: about 58.9s denoise on the first compiled call and about 74.5s on the second.
 - Forcing `mx.eval` after every denoise step was worse, about 83.2s generate. The lazy 10-step graph should remain.
 - At 256x384, compiling the whole 10-step denoise loop was also worse than the current per-step compiled-forward sidecar path. Do not wire whole-loop compile for small shapes.
@@ -125,6 +128,8 @@ Confirmed non-working or worse:
 - Do not retry TF32 or explicit `MLX_METAL_JIT` as a generic speed fix unless MLX changes or the workload changes. The sidecar fast-path report now records both flags so stale-runtime comparisons are visible.
 - Progressive latent sampling is a real speed lever but failed the preserved-quality constraint in the first full-size tests. A 960x1440 final image with 6 early steps at 608x896 and 4 final steps at 960x1440 reached about 30.05s denoise / 32.84s after load, but produced visible color artifacts and wardrobe/content drift. Safer 608x896/4 and 720x1088/6 variants were slower, about 51-55s denoise in the tested run, and still changed the image. Do not wire progressive latent into the main workflow unless a later variant removes those artifacts.
 - Progressive latent with high-frequency residual noise handoff improved artifacts in a small 256x384 probe but did not preserve the full workflow target. The full 960x1440 test at 608x896 / 6 low steps / residual alpha 0.5 took about 56.3s denoise / 60.2s after load and still drifted wardrobe/content. Do not retry this exact residual handoff as a speed fix.
+- `KREA2_MLX_ROPE_PRECISION=native` / input-dtype RoPE is slower at target size. A standalone sidecar run at 960x1440 / 10 steps / no LoRA took about 58.62s generate / 63.70s total versus the current fp32-RoPE default at about 51.93s generate. Keep default `fp32`.
+- Do not default-pause the raw Z-Image API listener on port `8787`. A real Comfy API test with raw port `8787` in focus mode made the stack supervisor health check fail and restart the whole stack mid-generation. Raw-port pausing must stay opt-in diagnostic only unless the supervisor health behavior is changed.
 
 ## Open Hypotheses Worth Testing
 
@@ -143,7 +148,7 @@ Potential next experiments that preserve 960x1440, 10 steps, and model quality:
 - Investigate LoRA adapter overhead separately. Existing logs show one LoRA can push generate time into about 80-116s and two LoRAs to about 130s.
 - For standard LoRAs, investigate adapter fusion or pre-packed multi-adapter projections without dequantizing/replacing the MXFP8 base weights.
 - If revisiting progressive latent, test it as an explicit opt-in turbo mode only. The first viable speed setting hit near-target runtime but failed visual QA; the next attempt should focus on artifact-free latent resize/timestep handoff, not just lower token counts.
-- Investigate a safe Krea focus mode for benchmarks or one-shot generations: pause or deprioritize idle-hot local generation lanes/services, run the Krea sidecar in foreground priority, then restore everything. This is not a model-quality change and is currently the highest-confidence path for eliminating the 100s+ outliers.
+- Extend the Krea focus guard only if measured contention remains. The current implementation handles idle sibling Comfy lanes; additional candidates like Flux2Server, Open Generative AI, or desktop screen-sharing processes need explicit evidence and safer active-job detection before pausing.
 
 ## Benchmark Rules
 
@@ -170,3 +175,7 @@ Use the same comparison setup unless explicitly testing another axis:
 - `KREA2_MLX_ACTIVATION_DTYPE=fp16`: available for testing; slower in current benchmark.
 - `KREA2_MLX_RECYCLE_SIDECAR_AFTER_RUN=1`: default to avoid warm-run drift.
 - `KREA2_MLX_BACKGROUND_SIDECAR=1`: opt into background scheduling; default is foreground because background scheduling was a suspected slowdown.
+- `KREA2_MLX_FOCUS_MODE=1`: default focus guard around native Krea2 generation.
+- `KREA2_MLX_FOCUS_PAUSE_PORTS=8198`: space- or comma-separated local Comfy ports to pause only when their `/queue` endpoint is idle.
+- `KREA2_MLX_FOCUS_PAUSE_RAW_PORTS=`: opt-in diagnostic only. Space- or comma-separated raw listener ports to pause without Comfy queue checks. Default is empty because pausing port `8787` trips the stack supervisor health check.
+- `KREA2_MLX_ROPE_PRECISION=fp32`: default and fastest confirmed RoPE path. `native` is available as a diagnostic flag only and was slower in target testing.

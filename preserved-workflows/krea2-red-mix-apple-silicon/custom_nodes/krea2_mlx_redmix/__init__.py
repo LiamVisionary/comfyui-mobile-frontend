@@ -83,6 +83,10 @@ def _desired_activation_dtype():
     return os.environ.get("KREA2_MLX_ACTIVATION_DTYPE", "bf16").lower()
 
 
+def _desired_rope_precision():
+    return os.environ.get("KREA2_MLX_ROPE_PRECISION", "fp32").lower()
+
+
 def _desired_text_max_length():
     return os.environ.get("KREA2_MLX_TEXT_MAX_LENGTH", "512")
 
@@ -105,6 +109,139 @@ def _timings_enabled():
 
 def _recycle_sidecar_after_run():
     return os.environ.get("KREA2_MLX_RECYCLE_SIDECAR_AFTER_RUN", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _focus_mode_enabled():
+    return os.environ.get("KREA2_MLX_FOCUS_MODE", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _focus_pause_ports():
+    raw = os.environ.get("KREA2_MLX_FOCUS_PAUSE_PORTS", "8198")
+    ports = []
+    for item in raw.replace(",", " ").split():
+        try:
+            port = int(item)
+        except ValueError:
+            continue
+        if port > 0 and port not in ports:
+            ports.append(port)
+    return ports
+
+
+def _focus_pause_raw_ports():
+    raw = os.environ.get("KREA2_MLX_FOCUS_PAUSE_RAW_PORTS", "")
+    ports = []
+    for item in raw.replace(",", " ").split():
+        try:
+            port = int(item)
+        except ValueError:
+            continue
+        if port > 0 and port not in ports:
+            ports.append(port)
+    return ports
+
+
+def _listener_pids(port):
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/lsof", f"-tiTCP:{int(port)}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except Exception:
+        return []
+    pids = []
+    for raw_pid in result.stdout.split():
+        try:
+            pid = int(raw_pid)
+        except ValueError:
+            continue
+        if pid > 0 and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _pid_stat(pid):
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-o", "stat=", "-p", str(int(pid))],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip()
+
+
+def _comfy_lane_queue_idle(port):
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{int(port)}/queue", method="GET")
+        with urllib.request.urlopen(request, timeout=1) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return False
+    return not payload.get("queue_running") and not payload.get("queue_pending")
+
+
+class _KreaFocusGuard:
+    def __init__(self):
+        self._paused = []
+
+    def __enter__(self):
+        if not _focus_mode_enabled():
+            return self
+        self_pid = os.getpid()
+        sidecar_pid = _SIDECAR_PROC.pid if _SIDECAR_PROC is not None and _SIDECAR_PROC.poll() is None else None
+        for port in _focus_pause_ports():
+            if not _comfy_lane_queue_idle(port):
+                print(f"[Krea2MLX] focus skip port={port}: lane not idle or queue unavailable", flush=True)
+                continue
+            for pid in _listener_pids(port):
+                if pid in {self_pid, sidecar_pid}:
+                    continue
+                stat = _pid_stat(pid)
+                if "T" in stat:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGSTOP)
+                    self._paused.append((pid, port))
+                except ProcessLookupError:
+                    continue
+                except Exception as exc:
+                    print(f"[Krea2MLX] focus could not pause pid={pid} port={port}: {exc}", flush=True)
+        for port in _focus_pause_raw_ports():
+            for pid in _listener_pids(port):
+                if pid in {self_pid, sidecar_pid}:
+                    continue
+                stat = _pid_stat(pid)
+                if "T" in stat:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGSTOP)
+                    self._paused.append((pid, port))
+                except ProcessLookupError:
+                    continue
+                except Exception as exc:
+                    print(f"[Krea2MLX] focus could not pause raw pid={pid} port={port}: {exc}", flush=True)
+        if self._paused:
+            print(f"[Krea2MLX] focus paused idle sibling lanes={self._paused}", flush=True)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for pid, port in reversed(self._paused):
+            try:
+                os.kill(pid, signal.SIGCONT)
+                print(f"[Krea2MLX] focus resumed pid={pid} port={port}", flush=True)
+            except ProcessLookupError:
+                continue
+            except Exception as resume_exc:
+                print(f"[Krea2MLX] focus could not resume pid={pid} port={port}: {resume_exc}", flush=True)
+        self._paused = []
+        return False
 
 
 def _request_json(path, payload=None, timeout=10):
@@ -136,6 +273,7 @@ def _status_is_fast_path_healthy(payload):
         and "mlx_fast_path_report" in features
         and runtime.get("compile_forward") is True
         and str(runtime.get("activation_dtype")) == _desired_activation_dtype()
+        and str(runtime.get("rope_precision", "fp32")) == _desired_rope_precision()
         and str(runtime.get("text_max_length")) == _desired_text_max_length()
         and bool(runtime.get("dynamic_text_length")) is _desired_dynamic_text_length()
         and runtime.get("profile_stages") is _desired_bool_env("KREA2_MLX_PROFILE_STAGES", "0")
@@ -204,6 +342,7 @@ def _ensure_sidecar():
             "MLX_METAL_FAST_SYNCH": os.environ.get("MLX_METAL_FAST_SYNCH", "1"),
             "KREA2_MLX_COMPILE_FORWARD": os.environ.get("KREA2_MLX_COMPILE_FORWARD", "1"),
             "KREA2_MLX_ACTIVATION_DTYPE": _desired_activation_dtype(),
+            "KREA2_MLX_ROPE_PRECISION": _desired_rope_precision(),
             "KREA2_MLX_TEXT_MAX_LENGTH": _desired_text_max_length(),
             "KREA2_MLX_DYNAMIC_TEXT_LENGTH": os.environ.get("KREA2_MLX_DYNAMIC_TEXT_LENGTH", "0"),
             "KREA2_MLX_PROFILE_STAGES": os.environ.get("KREA2_MLX_PROFILE_STAGES", "0"),
@@ -406,17 +545,18 @@ class Krea2MLXRedMixSampler:
         _ensure_sidecar()
         mark("pipeline")
         active_loras = _parse_lora_stack(lora_stack)
-        response = _request_json("/generate", {
-            "prompt": str(prompt).strip(),
-            "width": int(width),
-            "height": int(height),
-            "steps": int(steps),
-            "seed": int(seed),
-            "num_images": int(num_images),
-            "sampler": str(sampler),
-            "loras": active_loras,
-            "prefix": "Krea2_RedMix_sidecar",
-        }, timeout=max(600, int(steps) * 120))
+        with _KreaFocusGuard():
+            response = _request_json("/generate", {
+                "prompt": str(prompt).strip(),
+                "width": int(width),
+                "height": int(height),
+                "steps": int(steps),
+                "seed": int(seed),
+                "num_images": int(num_images),
+                "sampler": str(sampler),
+                "loras": active_loras,
+                "prefix": "Krea2_RedMix_sidecar",
+            }, timeout=max(600, int(steps) * 120))
         mark(f"sidecar_generate timings={response.get('timings')}")
         paths = response.get("images") or []
         if not paths:

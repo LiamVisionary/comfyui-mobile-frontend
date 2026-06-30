@@ -64,6 +64,7 @@ def _runtime_settings():
         "mlx_metal_jit": os.environ.get("MLX_METAL_JIT", ""),
         "compile_forward": _compile_forward_enabled(),
         "activation_dtype": os.environ.get("KREA2_MLX_ACTIVATION_DTYPE", "bf16").lower(),
+        "rope_precision": os.environ.get("KREA2_MLX_ROPE_PRECISION", "fp32").lower(),
         "text_max_length": os.environ.get("KREA2_MLX_TEXT_MAX_LENGTH", "512"),
         "dynamic_text_length": os.environ.get("KREA2_MLX_DYNAMIC_TEXT_LENGTH", "0").lower()
         in {"1", "true", "yes", "on"},

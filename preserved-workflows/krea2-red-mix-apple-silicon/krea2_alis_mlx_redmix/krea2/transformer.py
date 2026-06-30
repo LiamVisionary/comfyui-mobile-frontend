@@ -9,6 +9,7 @@ to f32 internally (weight = stored `scale` + 1.0).
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 import mlx.core as mx
@@ -117,9 +118,14 @@ def _make_rope(pos: mx.array, axes: list[int], theta: float) -> tuple[mx.array, 
 def _apply_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     """x: (B, H, L, D); cos/sin: (L, D/2). Interleaved (adjacent-pair) rotation."""
     b, h, l, d = x.shape
-    xf = x.astype(mx.float32).reshape(b, h, l, d // 2, 2)
+    rope_precision = os.environ.get("KREA2_MLX_ROPE_PRECISION", "fp32").lower()
+    if rope_precision in {"native", "input", "bf16", "fp16"}:
+        xf = x.reshape(b, h, l, d // 2, 2)
+        c, s = cos.astype(x.dtype)[None, None], sin.astype(x.dtype)[None, None]
+    else:
+        xf = x.astype(mx.float32).reshape(b, h, l, d // 2, 2)
+        c, s = cos[None, None], sin[None, None]
     x0, x1 = xf[..., 0], xf[..., 1]
-    c, s = cos[None, None], sin[None, None]  # (1,1,L,D/2)
     o0 = x0 * c - x1 * s
     o1 = x0 * s + x1 * c
     out = mx.stack([o0, o1], axis=-1).reshape(b, h, l, d)
