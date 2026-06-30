@@ -32,6 +32,12 @@ Lightweight benchmark target added on 2026-06-30:
 - The reference PNG `/Users/liam/Downloads/e39e3b884e724eb8bb19e6176a408f42.png` embeds the same base seed `794015397137290`, a separate SeedVR2 upscaler seed `3041761909`, and final size 1920x2880.
 - Same seed across different resolutions is not expected to produce the same image. Krea2 samples a different latent tensor shape, different image token count, different RoPE positions, and a different timestep schedule when resolution changes.
 
+Confirmed contention finding from 2026-06-30:
+
+- The same native compact-prompt 960x1440 / 10-step path can swing from about 99.8s generate under active desktop/local-service contention to about 51.1s generate after isolating the Krea sidecar from an idle-hot Anima lane. The isolated run reported about 12.1s pipeline load / 51.1s generate / 63.3s total.
+- Memory pressure was not the limiter in this run; system stats still showed about 81 GB free RAM. The visible pressure was competing CPU/GPU/process activity, including WindowServer, Open Generative AI GPU helper, Splashtop, and previously the Anima Comfy lane.
+- Benchmark reports must include the top process-pressure snapshot, not only the sidecar fast-path report, because the fast path can be correct while wall time is still ruined by contention.
+
 ## What Sampler Are We Using?
 
 Confirmed from `/Users/liam/comfy/krea2_alis_mlx_redmix/krea2/sampling.py`:
@@ -118,6 +124,7 @@ Confirmed non-working or worse:
 - `MLX_ENABLE_TF32=1` plus `MLX_METAL_JIT=1` is slower on the 256x384 fixed-seed long-prompt benchmark. Warm generate was about 14.14-14.44s.
 - Do not retry TF32 or explicit `MLX_METAL_JIT` as a generic speed fix unless MLX changes or the workload changes. The sidecar fast-path report now records both flags so stale-runtime comparisons are visible.
 - Progressive latent sampling is a real speed lever but failed the preserved-quality constraint in the first full-size tests. A 960x1440 final image with 6 early steps at 608x896 and 4 final steps at 960x1440 reached about 30.05s denoise / 32.84s after load, but produced visible color artifacts and wardrobe/content drift. Safer 608x896/4 and 720x1088/6 variants were slower, about 51-55s denoise in the tested run, and still changed the image. Do not wire progressive latent into the main workflow unless a later variant removes those artifacts.
+- Progressive latent with high-frequency residual noise handoff improved artifacts in a small 256x384 probe but did not preserve the full workflow target. The full 960x1440 test at 608x896 / 6 low steps / residual alpha 0.5 took about 56.3s denoise / 60.2s after load and still drifted wardrobe/content. Do not retry this exact residual handoff as a speed fix.
 
 ## Open Hypotheses Worth Testing
 
@@ -136,6 +143,7 @@ Potential next experiments that preserve 960x1440, 10 steps, and model quality:
 - Investigate LoRA adapter overhead separately. Existing logs show one LoRA can push generate time into about 80-116s and two LoRAs to about 130s.
 - For standard LoRAs, investigate adapter fusion or pre-packed multi-adapter projections without dequantizing/replacing the MXFP8 base weights.
 - If revisiting progressive latent, test it as an explicit opt-in turbo mode only. The first viable speed setting hit near-target runtime but failed visual QA; the next attempt should focus on artifact-free latent resize/timestep handoff, not just lower token counts.
+- Investigate a safe Krea focus mode for benchmarks or one-shot generations: pause or deprioritize idle-hot local generation lanes/services, run the Krea sidecar in foreground priority, then restore everything. This is not a model-quality change and is currently the highest-confidence path for eliminating the 100s+ outliers.
 
 ## Benchmark Rules
 
