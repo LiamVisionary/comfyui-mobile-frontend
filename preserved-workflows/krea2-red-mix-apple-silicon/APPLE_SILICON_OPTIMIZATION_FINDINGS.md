@@ -39,6 +39,24 @@ Confirmed contention finding from 2026-06-30:
 - Benchmark reports must include the top process-pressure snapshot, not only the sidecar fast-path report, because the fast path can be correct while wall time is still ruined by contention.
 - Implemented `KREA2_MLX_FOCUS_MODE=1` in the native Comfy node. A real Comfy API run at 960x1440 / 10 steps / seed `794015397137290` / saved workflow prompt / no LoRA completed in about 58.35s wall, with sidecar timings of about 5.40s pipeline / 51.93s generate / 57.40s total. The log confirmed Anima port `8198` was paused and resumed during generation.
 
+Confirmed AppleSilicon-FP8 supervisor finding from 2026-06-30:
+
+- The supervised default Comfy lane was not inheriting `ASFP8_INT8_EXT=1` or `ASFP8_FP8_EXT=1`. Manual restarts on port `8188` were immediately replaced by `zimage-stack supervise`, so benchmarks that looked like ASFP8 native-kernel runs could silently be plain supervised Comfy runs.
+- Patched `/Users/liam/.local/bin/zimage-stack` so the default `8188` lane starts with:
+  - `ASFP8_INT8_EXT=1`
+  - `ASFP8_FP8_EXT=1`
+  - `ASFP8_TRACE_OPS=0`
+  - `ASFP8_PROFILE=0`
+- Confirmed after launch: the actual listener process env contains those flags, and `/Users/liam/.comfy-private.noindex/comfy.log` reports `[AppleSilicon-FP8/int8_kernel] INT8 convrot Linear routed through bit-exact Metal kernel on MPS`.
+- Confirmed model metadata: `/Users/liam/comfy/ComfyUI/models/diffusion_models/Krea2_Turbo_convrot_int8mixed.safetensors` has `convrot: true` quantization metadata on its INT8 layers.
+- Correct warm benchmark, no `/free` between runs, short prompt, `Krea2_Turbo_convrot_int8mixed.safetensors`, `qwen3vl_4b_fp8_scaled.safetensors`, `qwen_image_vae.safetensors`, Comfy `KSampler` `er_sde` / `simple`, CFG 1.0, 8 steps:
+  - 256x128 cold warm-up: 9.814s wall.
+  - 256x128 warm repeat: 2.270s wall.
+  - 1280x640 warm run A: 24.906s wall.
+  - 1280x640 warm run B: 29.429s wall.
+- Confirmed correction: ASFP8 ConvRot INT8 can reproduce the author's approximately 24s 1280x640 Krea2 Turbo class result on this machine when launched through the real supervised path and benchmarked warm. Earlier slower results were invalid for the speed claim because they included cold model load and/or were run without the supervised env flags.
+- Scope: this validates the Krea2 Turbo ConvRot ASFP8 route. It does not by itself solve the separate Krea2 Red Mix MLX workflow target of 960x1440 / 10 steps / preserved reference image quality.
+
 ## What Sampler Are We Using?
 
 Confirmed from `/Users/liam/comfy/krea2_alis_mlx_redmix/krea2/sampling.py`:
@@ -94,6 +112,7 @@ Confirmed improvements or useful instrumentation:
 - Keep `start_new_session=True` when spawning the sidecar so it survives the launcher process correctly.
 - Do not demote the sidecar with `taskpolicy -B` unless explicitly setting `KREA2_MLX_BACKGROUND_SIDECAR=1`.
 - Keep `KREA2_MLX_FOCUS_MODE=1` for the native Krea2 node unless it proves disruptive. It pauses configured idle sibling Comfy lanes, currently port `8198` for Anima, only while the Krea sidecar `/generate` call is running. It skips Comfy lanes with running/pending queue work and resumes paused pids afterward. This is a contention fix, not a quality or sampling change.
+- Keep the default `8188` Comfy lane's ASFP8 supervisor env in `/Users/liam/.local/bin/zimage-stack`. This is required for Krea2 Turbo ConvRot INT8 to use the AppleSilicon-FP8 native M5 kernel in real mobile/API runs, not only in ad hoc shell launches.
 
 ## Dead Ends / Do Not Retry Blindly
 
@@ -130,6 +149,55 @@ Confirmed non-working or worse:
 - Progressive latent with high-frequency residual noise handoff improved artifacts in a small 256x384 probe but did not preserve the full workflow target. The full 960x1440 test at 608x896 / 6 low steps / residual alpha 0.5 took about 56.3s denoise / 60.2s after load and still drifted wardrobe/content. Do not retry this exact residual handoff as a speed fix.
 - `KREA2_MLX_ROPE_PRECISION=native` / input-dtype RoPE is slower at target size. A standalone sidecar run at 960x1440 / 10 steps / no LoRA took about 58.62s generate / 63.70s total versus the current fp32-RoPE default at about 51.93s generate. Keep default `fp32`.
 - Do not default-pause the raw Z-Image API listener on port `8787`. A real Comfy API test with raw port `8787` in focus mode made the stack supervisor health check fail and restart the whole stack mid-generation. Raw-port pausing must stay opt-in diagnostic only unless the supervisor health behavior is changed.
+- Comfy-native FP8 Krea2 on MPS is not a speed path. The local `Krea2RedMix-10Steps-fp8-scaled-ComfyUI.safetensors` standard `UNETLoader` + `KSampler` path failed at 256x384 / 10 steps with `TypeError: Trying to convert Float8_e4m3fn to the MPS backend but it does not have support for that dtype.`
+- Comfy-native BF16 Krea2 through standard `UNETLoader` + `KSampler` is far slower than the MLX sidecar. A 256x384 / 10-step `er_sde` run with `Krea2RedMix-10Steps-bf16-dequant-ComfyUI.safetensors` took about 40.3s wall. A nearby native MLX recompute with sidecar/process warmup contamination took about 15.1s wall; previous clean warm 256x384 native sidecar runs are about 6-8s.
+- Comfy-native INT8 Krea2 Turbo on MPS is not a speed path. `Krea2_Turbo_int8mixed.safetensors` from `Winnougan/Krea-2-Base-Turbo-NVFP4-FP8-INT8` loaded, but the 256x384 / 8-step `er_sde` run failed in `KSampler` with `NotImplementedError: aten::_int_mm is not currently implemented for the MPS device.` PyTorch suggests `PYTORCH_ENABLE_MPS_FALLBACK=1`, but that moves the missing op to CPU and is not an Apple GPU fast path.
+- ConvRot INT8 is currently NVIDIA-oriented here. The HuggingFace workflow expects `OTUNetLoaderW8A8`, which was not installed before testing, and BobJohnson24's INT8-fast README describes NVIDIA INT8/Triton/CUDA acceleration. The local PyTorch probe confirmed `torch._int_mm` works on CPU but not MPS. Do not download or chase ConvRot INT8 as an Apple Silicon speed fix unless a Metal or MLX int8 matmul path exists.
+- Comfy-native MXFP8 and NVFP4 are not Apple GPU speed paths in this local stack. A direct comfy-kitchen backend probe on MPS failed for both `quantize_mxfp8` and `quantize_nvfp4` with the same `Float8_e4m3fn` unsupported-on-MPS error; the same probes worked on CPU. Do not download the Turbo MXFP8/NVFP4 checkpoints for speed unless the MPS float8 limitation or backend kernels change.
+- The Winnougan quant repo sizes checked on 2026-06-30: Turbo INT8 about 12.9 GB, Turbo ConvRot INT8 about 12.9 GB, Turbo FP8 about 12.9 GB, Turbo MXFP8 about 13.5 GB, Turbo NVFP4 about 7.7 GB, INT8 text encoder about 4.8 GB. Downloading more of these does not change the confirmed MPS backend limitations above.
+- `ComfyUI-AppleSilicon-FP8` is useful for compatibility and is a real speed path for Krea2 Turbo ConvRot INT8 when launched with the supervised env fix. Installed `/Users/liam/comfy/ComfyUI/custom_nodes/ComfyUI-AppleSilicon-FP8`, `ninja`, and `mtlflashattn`; installed Xcode 26.6, accepted license, and downloaded the Metal Toolchain with `xcodebuild -downloadComponent MetalToolchain`.
+- AppleSilicon-FP8 compatibility mode changed Krea2 Turbo INT8 from hard failure to success: 256x384 / 8-step / `Krea2_Turbo_int8mixed.safetensors` completed in about 24.1s wall. That is still slower than native MLX and not a useful speed target.
+- Xcode 26.6 / macOS 26.5 SDK exposes `MTLLanguageVersion4_0`, not the repo's hardcoded `MTLLanguageVersion4_1`. A local patch changed `MTLLanguageVersion4_1` to `MTLLanguageVersion4_0` in the AppleSilicon-FP8 int8/fp8 extension sources; with that patch, the startup log confirmed `[AppleSilicon-FP8/int8_kernel] INT8 convrot Linear routed through bit-exact Metal kernel on MPS`.
+- With the local Metal 4.0 patch and `ASFP8_INT8_EXT=1 ASFP8_FP8_EXT=1`, the same plain `Krea2_Turbo_int8mixed.safetensors` 256x384 / 8-step test got worse, about 48.2s wall. Inferred cause: the native kernel is designed for ConvRot W8A8, while the tested file is regular INT8. Do not use plain INT8 Turbo as the benchmark for the native kernel.
+- Superseded bad AppleSilicon-FP8 ConvRot test: `Krea2_Turbo_convrot_int8mixed.safetensors`, 256x384 / 8-step / `er_sde` / CFG 1.0, reported about 34.2s wall before the supervisor env fix and while earlier scripts were calling `/free` before each quant run. Do not use that number for the author's warm 1280x640 speed comparison.
+- Do not call `/free` before timing warm generation unless the run is explicitly labeled cold. `/free` forces model unload/reload and can make fast-path timing look broken.
+
+## Installed Krea2 Quality-Lane Dependencies
+
+Installed or downloaded on 2026-06-30 for separate quality workflow experiments:
+
+- Custom nodes:
+  - `/Users/liam/comfy/ComfyUI/custom_nodes/ComfyUI-VAE-Utils`
+  - `/Users/liam/comfy/ComfyUI/custom_nodes/ComfyUI-Krea2TextEncoder`
+  - `/Users/liam/comfy/ComfyUI/custom_nodes/ComfyUI-RBG-SmartSeedVariance`
+- Loaded node class names after restart:
+  - `VAEUtils_CustomVAELoader`
+  - `VAEUtils_VAEDecodeTiled`
+  - `TextEncodeKrea2`
+  - `Krea2SystemPrompt`
+  - `RBG_Smart_Seed_Variance`
+- Downloaded models/LoRAs:
+  - `/Users/liam/comfy/ComfyUI/models/diffusion_models/Krea2_Turbo_int8mixed.safetensors`
+  - `/Users/liam/comfy/ComfyUI/models/loras/krea2_turbo_lora_rank_64_bf16.safetensors`
+  - `/Users/liam/comfy/ComfyUI/models/vae/Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors`
+  - `/Users/liam/comfy/ComfyUI/models/vae/qwen_image_HDR_vae_fp32_comfy.safetensors`
+- Comfy-Org Krea2 raw/turbo size check: Raw BF16 and Turbo BF16 are each about 26.3 GB; Raw FP8 and Turbo FP8 are each about 13.1 GB. Raw + Turbo LoRA should be treated as a separate quality recipe, not evidence for the native MLX Red Mix speed goal.
+
+## Release Routing Hardening
+
+Confirmed on 2026-06-30:
+
+- Apple Silicon-specific acceleration is now centralized in `/Users/liam/comfy/z-image-api/hardware_profile.py`.
+- The profile can be forced with `ZIMG_ACCELERATOR_PROFILE=apple-silicon|cuda|rocm|apple-intel|cpu`; otherwise it auto-detects Darwin arm64 as `apple-silicon`, NVIDIA as `cuda`, ROCm as `rocm`, and falls back to `cpu`.
+- `/Users/liam/.local/bin/zimage-stack` now consumes that profile before launching the managed stack. `ASFP8_INT8_EXT`, `ASFP8_FP8_EXT`, the Swift/MLX Flux2 sidecar, native BigLove MLX intercept, and the Comfy quad-attention flag are enabled by default only for the `apple-silicon` profile.
+- Both managed Comfy lanes receive the same ASFP8 defaults on Apple Silicon, so Anima, BigLove Flux/Klein, Krea2 Turbo ConvRot, and Red Mix experiments share the same device gate instead of each workflow carrying separate Apple-only assumptions.
+- The API guards the native MLX BigLove path and the MPS-only BigLove MXFP8-to-BF16 rewrite behind the same profile. Unit tests force `ZIMG_ACCELERATOR_PROFILE=cuda` and confirm those Apple-only routes are disabled on CUDA.
+- The Krea2 Red Mix MLX custom node and sidecar now import the same profile helper and reject the MLX route unless `native_mlx` is supported. Import-level probes confirmed forced `cuda` rejects the route and forced `apple-silicon` allows it.
+- Live post-restart verification on this M5 machine: default Comfy and Anima Comfy children had `ZIMG_ACCELERATOR_PROFILE=apple-silicon`, `ZIMG_ENABLE_APPLE_SILICON_OPTIMIZATIONS=1`, `ASFP8_INT8_EXT=1`, and `ASFP8_FP8_EXT=1`; the API child had `ZIMG_ACCELERATOR_PROFILE=apple-silicon`, `ZIMG_USE_FLUX2_SERVER=1`, and `ZIMG_NATIVE_MXFP8_PROMPT_INTERCEPT=1`.
+
+Inferred release implication:
+
+- Future CUDA/ROCm optimization routes should be added to `hardware_profile.py` as new capabilities and consumed by the supervisor/API through the same profile object, rather than checking machine-specific env vars inside individual workflow patches.
 
 ## Open Hypotheses Worth Testing
 

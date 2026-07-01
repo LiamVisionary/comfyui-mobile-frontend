@@ -54,6 +54,8 @@ interface WidgetControlProps {
   modelKind?: LoraManagerPrefix | null;
 }
 
+const LORA_STRENGTH_OPTIONS = { min: -100000, max: 100000, step: 0.01 } as const;
+
 export function WidgetControl({
   name,
   type,
@@ -304,7 +306,7 @@ export function WidgetControl({
             containerClass="space-y-0"
             name={showClip ? "Model strength" : "Strength"}
             value={Number(loraValue.strength)}
-            options={{ min: -10, max: 10, step: 0.01 }}
+            options={LORA_STRENGTH_OPTIONS}
             onChange={(val) => handleEntryChange({ strength: val })}
             disabled={disabled}
             type="FLOAT"
@@ -315,7 +317,7 @@ export function WidgetControl({
               containerClass="space-y-0"
               name="Clip strength"
               value={Number(loraValue.clipStrength ?? loraValue.strength)}
-              options={{ min: -10, max: 10, step: 0.01 }}
+              options={LORA_STRENGTH_OPTIONS}
               onChange={(val) => handleEntryChange({ clipStrength: val })}
               disabled={disabled}
               type="FLOAT"
@@ -520,7 +522,7 @@ export function WidgetControl({
                 compact
                 type="FLOAT"
                 value={loraValue.strength}
-                options={{ min: -10, max: 10, step: 0.01 }}
+                options={LORA_STRENGTH_OPTIONS}
                 onChange={(val) => handleSubChange("strength", val)}
                 disabled={disabled}
               />
@@ -541,7 +543,7 @@ export function WidgetControl({
                   compact
                   type="FLOAT"
                   value={loraValue.strengthTwo ?? loraValue.strength}
-                  options={{ min: -10, max: 10, step: 0.01 }}
+                  options={LORA_STRENGTH_OPTIONS}
                   onChange={(val) => handleSubChange("strengthTwo", val)}
                   disabled={disabled}
                 />
