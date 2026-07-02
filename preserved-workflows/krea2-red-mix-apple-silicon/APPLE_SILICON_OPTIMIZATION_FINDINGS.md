@@ -343,6 +343,22 @@ Confirmed Krea2 prompt-bloat fix from 2026-07-01 (injector consolidation + negat
 - Benchmark note: post-restart timings were contaminated by `hivemindos/scripts/agent-telemetry-collector.mjs` at 250-470% CPU (control 500-char run 12.1s vs 7.07s clean, about 1.7x). Under identical contention, old pasted JSON = 44.4s wall vs new regenerated JSON = 29.8-30.9s wall at 528x368 / 8 steps with rebalancer, LoRAs off, i.e. about 33 percent faster; normalized to clean conditions the regen payload lands in the ~17-18s class consistent with the 4.9k-char scaling point. The telemetry collector is now a named contention source for benchmark hygiene, alongside WindowServer/Splashtop.
 - Tests: comfyui-prompt-assistant 43 OK (2 new: single-occurrence injection, minify strip); ComfyUI-Krea2TextEncoder 6 OK (1 new: structured strip).
 
+Confirmed Krea2 framing strategy from 2026-07-02 (object-placement anchors, never visibility rules):
+
+- Krea2 training captions describe objects with positions; "both subjects fully visible" / "legs in shot" / "no cropped heads" are not caption language and do nothing (negations backfire in positive conditioning). Confirmed on Liam's sofa scene and by community results.
+- Frame bounds are controlled by described objects: ceiling light fixture above the subjects = top edge (confirmed working), floor + planted feet = bottom edge (confirmed working), "empty wall and floor space beyond the left/right sofa arm" = side edges (added after the sofa arms kept cropping - furniture gets cropped at its edges unless something beyond those edges is described).
+- json_structured/json_minify now encode scene-first (background + photography before subject) in both custom nodes, strip negation lists, and scrub known legacy meta phrases from lists AND prose so old saved prompts are healed at encode time.
+- Prior-fighting constraints (female-on-sofa pose vs kneeling-on-floor prior) keep a deliberate 2x concrete-imagery dose in pose.position + body.legs; everything else is 1x.
+- Latent aspect ratio matters: 528x368 is 1.43:1, squarer than the prompted 16:9 wide-sofa composition, which pressures the model to crop width. Prefer a true wide latent (e.g. 624x352 or 848x480) for full-sofa scenes.
+
+Confirmed z-image-api WebSocket relay fix from 2026-07-02 (10s image-delivery delay on remote tailnet clients):
+
+- Symptom: generation completes on the M5 but the remote browser (M2 over tailscale HTTPS proxy) showed the image 10s+ later. Server-side serving was fast (45-76ms for /comfy/view including .zenc openssl decrypt at 50k PBKDF2 iters; history 121ms).
+- Root cause: `proxy_websocket_to_comfy` in `/Users/liam/comfy/z-image-api/app.py` set both sockets non-blocking and then called `sendall()` in a select loop. When the remote client couldn't drain Comfy's binary latent-preview frames fast enough, sendall raised BlockingIOError mid-frame (or wrote a partial frame, desyncing the WebSocket stream) and killed the tunnel mid-generation - visible as `proxy error: read ECONNRESET` in z-image-tailscale-https-proxy.log. The browser missed the `executed` event and fell back to the 2s queue poll + history fetch + reconnect churn.
+- Also: the upstream socket kept create_connection's 10s timeout, so idle tunnels could die.
+- Fix: relay the handshake until the full header terminator, then two blocking pump threads with timeouts cleared; blocking sendall applies backpressure instead of dying. Verified through the real relay: cold run `executed` arrived at completion (9.37s = model load + gen), warm run 3.26s from queue POST to `executed` (pure generation time, zero relay overhead).
+- z-image-api is NOT under git version control; this fix exists only in the working tree.
+
 Implication:
 
 - A 35-46s 528x368 run is not expected on the current direct Comfy path unless something outside the saved graph is changing the prompt, invalidating graph cache, adding a reference image, running another heavy job concurrently, or using a different server/process than the supervised ASFP8 lane.
